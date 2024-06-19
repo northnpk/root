@@ -120,7 +120,7 @@ class BaseGenerator:
         max_vec_sizes: dict[str, int] = dict(),
         vec_padding: int = 0,
         # target: str = "",
-        targets: list[str]|str = list(),
+        targets: list[str]|str = list(), #Muti-label and Single-label Handling
         weights: str = "",
         validation_split: float = 0.0,
         max_chunks: int = 0,
@@ -186,7 +186,7 @@ class BaseGenerator:
         #     f'#include "{main_folder}Cpp_files/RBatchGenerator.cpp"')
 
         # self.target_column = target
-        if type(targets) == str: # to check if targets is a single label, then create a list of that label
+        if type(targets) == str: # to check if targets is a single label, then create a list of that labels
             targets = [targets]
         self.target_columns = targets
         self.weights_column = weights
@@ -620,7 +620,7 @@ def CreateNumPyGenerators(
     max_vec_sizes: dict[str, int] = dict(),
     vec_padding: int = 0,
     # target: str = "",
-    targets: list[str] = list(),
+    targets: list[str]|str = list(), #Muti-label and Single-label Handling
     weights: str = "",
     validation_split: float = 0.0,
     max_chunks: int = 0,
@@ -703,7 +703,7 @@ def CreateTFDatasets(
     max_vec_sizes: dict[str, int] = dict(),
     vec_padding: int = 0,
     # target: str = "",
-    targets: list[str] = list(),
+    targets: list[str]|str = list(), #Muti-label and Single-label Handling
     weights: str = "",
     validation_split: float = 0.0,
     max_chunks: int = 0,
@@ -832,7 +832,7 @@ def CreatePyTorchGenerators(
     max_vec_sizes: dict[str, int] = dict(),
     vec_padding: int = 0,
     # target: str = "",
-    targets: list[str] = list(),
+    targets: list[str]|str = list(), #Muti-label and Single-label Handling
     weights: str = "",
     validation_split: float = 0.0,
     max_chunks: int = 0,
