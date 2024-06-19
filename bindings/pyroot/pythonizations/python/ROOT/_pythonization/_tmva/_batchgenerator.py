@@ -119,7 +119,8 @@ class BaseGenerator:
         filters: list[str] = list(),
         max_vec_sizes: dict[str, int] = dict(),
         vec_padding: int = 0,
-        target: str = "",
+        # target: str = "",
+        targets: list[str] = list(),
         weights: str = "",
         validation_split: float = 0.0,
         max_chunks: int = 0,
@@ -184,7 +185,8 @@ class BaseGenerator:
         # ROOT.gInterpreter.ProcessLine(
         #     f'#include "{main_folder}Cpp_files/RBatchGenerator.cpp"')
 
-        self.target_column = target
+        # self.target_column = target
+        self.target_columns = targets
         self.weights_column = weights
 
         template, max_vec_sizes_list = self.get_template(
@@ -192,19 +194,31 @@ class BaseGenerator:
         )
 
         self.num_columns = len(self.all_columns)
+        self.num_targets = len(self.target_columns)
         self.batch_size = batch_size
 
         # Handle target
-        self.target_given = len(self.target_column) > 0
-        if self.target_given:
-            if target in self.all_columns:
-                self.target_index = self.all_columns.index(self.target_column)
-            else:
-                raise ValueError(
-                    f"Provided target not in given columns: \ntarget => \
-                        {target}\ncolumns => {self.all_columns}"
-                )
-
+        # self.target_given = len(self.target_column) > 0
+        # if self.target_given:
+        #     if target in self.all_columns:
+        #         self.target_index = self.all_columns.index(self.target_column)
+        #     else:
+        #         raise ValueError(
+        #             f"Provided target not in given columns: \ntarget => \
+        #                 {target}\ncolumns => {self.all_columns}"
+        #         )
+        self.target_given = self.num_targets > 0
+        if self.target_given :
+            self.target_index = []
+            for t in self.target_columns:
+                if t in self.all_columns :
+                    self.target_index.append(self.all_columns.index(t))
+                else :
+                    raise ValueError(
+                        f"Provided target not in given columns: \ntarget => \
+                            {t}\ncolumns => {self.all_columns}"
+                    )
+                    
         # Handle weights
         self.weights_given = len(self.weights_column) > 0
         if self.weights_given and not self.target_given:
@@ -218,7 +232,11 @@ class BaseGenerator:
                         {weights}\ncolumns => {self.all_columns}"
                 )
 
-        self.train_columns = [c for c in self.all_columns if c not in [target, weights]]
+        # self.train_columns = [c for c in self.all_columns if c not in [targets, weights]]
+        self.train_columns = [c for c in self.all_columns if c not in targets+[weights]]
+        self.train_index = [self.all_columns.index(c) for c in self.train_columns]
+        self.num_train = len(self.train_index) # counting of train columns
+        # print(self.train_index)
 
         from ROOT import TMVA, EnableThreadSafety
 
@@ -281,13 +299,13 @@ class BaseGenerator:
             return np.zeros((self.batch_size, self.num_columns))
 
         if not self.weights_given:
-            return np.zeros((self.batch_size, self.num_columns - 1)), np.zeros(
-                (self.batch_size)
+            return np.zeros((self.batch_size, self.num_train)), np.zeros(
+                (self.batch_size, self.num_targets)
             )
 
         return (
-            np.zeros((self.batch_size, self.num_columns - 2)),
-            np.zeros((self.batch_size)),
+            np.zeros((self.batch_size, self.num_train)),
+            np.zeros((self.batch_size, self.num_targets)),
             np.zeros((self.batch_size)),
         )
 
@@ -313,12 +331,13 @@ class BaseGenerator:
         # Splice target column from the data if weight is given
         if self.target_given:
             target_data = return_data[:, self.target_index]
-            return_data = np.column_stack(
-                (
-                    return_data[:, : self.target_index],
-                    return_data[:, self.target_index + 1 :],
-                )
-            )
+            # return_data = np.column_stack(
+            #     (
+            #         return_data[:, : self.target_index],
+            #         return_data[:, self.target_index + 1 :],
+            #     )
+            # )
+            return_data = return_data[:, self.train_index]
 
             # Splice weights column from the data if weight is given
             if self.weights_given:
@@ -357,12 +376,13 @@ class BaseGenerator:
         # Splice target column from the data if weight is given
         if self.target_given:
             target_data = return_data[:, self.target_index]
-            return_data = torch.column_stack(
-                (
-                    return_data[:, : self.target_index],
-                    return_data[:, self.target_index + 1 :],
-                )
-            )
+            # return_data = np.column_stack(
+            #     (
+            #         return_data[:, : self.target_index],
+            #         return_data[:, self.target_index + 1 :],
+            #     )
+            # )
+            return_data = return_data[:, self.train_index]
 
             # Splice weights column from the data if weight is given
             if self.weights_given:
@@ -477,9 +497,12 @@ class TrainRBatchGenerator:
     def train_columns(self) -> list[str]:
         return self.base_generator.train_columns
 
+    # @property
+    # def target_column(self) -> str:
+    #     return self.base_generator.target_column
     @property
-    def target_column(self) -> str:
-        return self.base_generator.target_column
+    def target_columns(self) -> str:
+        return self.base_generator.target_columns
 
     @property
     def weights_column(self) -> str:
@@ -541,9 +564,12 @@ class ValidationRBatchGenerator:
     def train_columns(self) -> list[str]:
         return self.base_generator.train_columns
 
+    # @property
+    # def target_column(self) -> str:
+    #     return self.base_generator.target_column
     @property
-    def target_column(self) -> str:
-        return self.base_generator.target_column
+    def target_columns(self) -> str:
+        return self.base_generator.target_columns
 
     @property
     def weights_column(self) -> str:
@@ -591,7 +617,8 @@ def CreateNumPyGenerators(
     filters: list[str] = list(),
     max_vec_sizes: dict[str, int] = dict(),
     vec_padding: int = 0,
-    target: str = "",
+    # target: str = "",
+    targets: list[str] = list(),
     weights: str = "",
     validation_split: float = 0.0,
     max_chunks: int = 0,
@@ -646,7 +673,8 @@ def CreateNumPyGenerators(
         filters,
         max_vec_sizes,
         vec_padding,
-        target,
+        # target,
+        targets,
         weights,
         validation_split,
         max_chunks,
@@ -672,7 +700,8 @@ def CreateTFDatasets(
     filters: list[str] = list(),
     max_vec_sizes: dict[str, int] = dict(),
     vec_padding: int = 0,
-    target: str = "",
+    # target: str = "",
+    targets: list[str] = list(),
     weights: str = "",
     validation_split: float = 0.0,
     max_chunks: int = 0,
@@ -729,7 +758,8 @@ def CreateTFDatasets(
         filters,
         max_vec_sizes,
         vec_padding,
-        target,
+        # target,
+        targets,
         weights,
         validation_split,
         max_chunks,
@@ -742,11 +772,12 @@ def CreateTFDatasets(
     validation_generator = ValidationRBatchGenerator(
         base_generator, base_generator.ConvertBatchToTF
     )
-
+    
     num_columns = len(train_generator.train_columns)
+    num_targets = len(train_generator.target_columns)
 
     # No target and weights given
-    if target == "":
+    if targets == "":
         batch_signature = tf.TensorSpec(
             shape=(batch_size, num_columns), dtype=tf.float32
         )
@@ -762,7 +793,7 @@ def CreateTFDatasets(
     else:
         batch_signature = (
             tf.TensorSpec(shape=(batch_size, num_columns), dtype=tf.float32),
-            tf.TensorSpec(shape=(batch_size,), dtype=tf.float32),
+            tf.TensorSpec(shape=(batch_size, num_targets), dtype=tf.float32),
             tf.TensorSpec(shape=(batch_size,), dtype=tf.float32),
         )
 
@@ -773,7 +804,7 @@ def CreateTFDatasets(
     # Give access to the columns function of the training set
     setattr(ds_train, "columns", train_generator.columns)
     setattr(ds_train, "train_columns", train_generator.train_columns)
-    setattr(ds_train, "target_column", train_generator.target_column)
+    setattr(ds_train, "target_columns", train_generator.target_columns)
     setattr(ds_train, "weights_column", train_generator.weights_column)
 
     ds_validation = tf.data.Dataset.from_generator(
@@ -783,7 +814,7 @@ def CreateTFDatasets(
     # Give access to the columns function of the validation set
     setattr(ds_validation, "columns", train_generator.columns)
     setattr(ds_validation, "train_columns", train_generator.train_columns)
-    setattr(ds_validation, "target_column", train_generator.target_column)
+    setattr(ds_validation, "target_columns", train_generator.target_columns)
     setattr(ds_validation, "weights_column", train_generator.weights_column)
 
     return ds_train, ds_validation
@@ -798,7 +829,8 @@ def CreatePyTorchGenerators(
     filters: list[str] = list(),
     max_vec_sizes: dict[str, int] = dict(),
     vec_padding: int = 0,
-    target: str = "",
+    # target: str = "",
+    targets: list[str] = list(),
     weights: str = "",
     validation_split: float = 0.0,
     max_chunks: int = 0,
@@ -853,7 +885,8 @@ def CreatePyTorchGenerators(
         filters,
         max_vec_sizes,
         vec_padding,
-        target,
+        # target,
+        targets,
         weights,
         validation_split,
         max_chunks,
