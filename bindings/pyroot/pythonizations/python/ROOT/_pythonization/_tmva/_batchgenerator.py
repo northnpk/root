@@ -112,7 +112,7 @@ class BaseGenerator:
     def __init__(
         self,
         tree_name: str,
-        file_name: str,
+        file_name: list[str]|str,
         batch_size: int,
         chunk_size: int,
         columns: list[str] = list(),
@@ -185,14 +185,16 @@ class BaseGenerator:
         # ROOT.gInterpreter.ProcessLine(
         #     f'#include "{main_folder}Cpp_files/RBatchGenerator.cpp"')
 
+        if type(file_name) == str:
+            file_name = [file_name,]
         # self.target_column = target
         if type(targets) == str: # to check if targets is a single label, then create a list of that labels
-            targets = [targets]
+            targets = [targets,]
         self.target_columns = targets
         self.weights_column = weights
 
         template, max_vec_sizes_list = self.get_template(
-            tree_name, file_name, columns, max_vec_sizes
+            tree_name, file_name[0], columns, max_vec_sizes
         )
 
         self.num_columns = len(self.all_columns)
@@ -824,7 +826,8 @@ def CreateTFDatasets(
 
 def CreatePyTorchGenerators(
     tree_name: str,
-    file_name: str,
+    # file_name: str,
+    file_name: list[str]|str,
     batch_size: int,
     chunk_size: int,
     columns: list[str] = list(),

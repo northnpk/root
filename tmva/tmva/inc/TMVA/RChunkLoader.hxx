@@ -115,7 +115,7 @@ class RChunkLoader {
 
 private:
    std::string fTreeName;
-   std::string fFileName;
+   std::vector<std::string> fFileNames;
    std::size_t fChunkSize;
    std::size_t fNumColumns;
 
@@ -128,17 +128,17 @@ private:
 public:
    /// \brief Constructor for the RChunkLoader
    /// \param treeName
-   /// \param fileName
+   /// \param fileNames
    /// \param chunkSize
    /// \param cols
    /// \param filters
    /// \param vecSizes
    /// \param vecPadding
-   RChunkLoader(const std::string &treeName, const std::string &fileName, const std::size_t chunkSize,
+   RChunkLoader(const std::string &treeName, const std::vector<std::string> &fileNames, const std::size_t chunkSize,
                 const std::vector<std::string> &cols, const std::string &filters = "",
                 const std::vector<std::size_t> &vecSizes = {}, const float vecPadding = 0.0)
       : fTreeName(treeName),
-        fFileName(fileName),
+        fFileNames(fileNames),
         fChunkSize(chunkSize),
         fCols(cols),
         fFilters(filters),
@@ -160,11 +160,16 @@ public:
       // Create TDataFrame of the chunk
       // Use RDatasetSpec to start reading at the current row
       long long start_l = currentRow;
-      ROOT::RDF::Experimental::RDatasetSpec x_spec =
-         ROOT::RDF::Experimental::RDatasetSpec()
-            .AddSample({"", fTreeName, fFileName})
-            .WithGlobalRange({start_l, std::numeric_limits<Long64_t>::max()});
+      // ROOT::RDF::Experimental::RDatasetSpec x_spec =
+      //    ROOT::RDF::Experimental::RDatasetSpec()
+      //       .AddSample({"", fTreeName, fFileName})
+      //       .WithGlobalRange({start_l, std::numeric_limits<Long64_t>::max()});
 
+      // ROOT::RDataFrame x_rdf(x_spec);
+      ROOT::RDF::Experimental::RDatasetSpec x_spec = ROOT::RDF::Experimental::RDatasetSpec();
+      for(int i=0; i<fFileNames.size(); i++){
+         x_spec.AddSample({"", fTreeName, fFileNames[i]}).WithGlobalRange({start_l, std::numeric_limits<Long64_t>::max()});
+      }
       ROOT::RDataFrame x_rdf(x_spec);
 
       // Load events if filters are given

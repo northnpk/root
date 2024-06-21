@@ -25,7 +25,8 @@ class RBatchGenerator {
 private:
    TMVA::RandomGenerator<TRandom3> fRng = TMVA::RandomGenerator<TRandom3>(0);
 
-   std::string fFileName;
+   // std::string fFileName;
+   std::vector<std::string> fFileNames;
    std::string fTreeName;
 
    std::vector<std::string> fCols;
@@ -64,13 +65,13 @@ private:
    float fVecPadding;
 
 public:
-   RBatchGenerator(const std::string &treeName, const std::string &fileName, const std::size_t chunkSize,
+   RBatchGenerator(const std::string &treeName, const std::vector<std::string> &fileNames, const std::size_t chunkSize,
                    const std::size_t batchSize, const std::vector<std::string> &cols, const std::string &filters = "",
                    const std::vector<std::size_t> &vecSizes = {}, const float vecPadding = 0.0,
                    const float validationSplit = 0.0, const std::size_t maxChunks = 0, const std::size_t numColumns = 0,
                    bool shuffle = true)
       : fTreeName(treeName),
-        fFileName(fileName),
+        fFileNames(fileNames),
         fChunkSize(chunkSize),
         fBatchSize(batchSize),
         fCols(cols),
@@ -87,12 +88,17 @@ public:
       fMaxBatches = ceil((fChunkSize / fBatchSize) * (1 - fValidationSplit));
 
       // get the number of fNumEntries in the dataframe
-      std::unique_ptr<TFile> f{TFile::Open(fFileName.c_str())};
-      std::unique_ptr<TTree> t{f->Get<TTree>(fTreeName.c_str())};
-      fNumEntries = t->GetEntries();
+      // std::unique_ptr<TFile> f{TFile::Open(fFileName.c_str())};
+      // std::unique_ptr<TTree> t{f->Get<TTree>(fTreeName.c_str())};
+      // fNumEntries = t->GetEntries();
+      for(int i=0; i<fFileNames.size(); i++){
+         std::unique_ptr<TFile> f{TFile::Open(fFileNames[i].c_str())};
+         std::unique_ptr<TTree> t{f->Get<TTree>(fTreeName.c_str())};
+         fNumEntries += t->GetEntries();
+      }
 
       fChunkLoader = std::make_unique<TMVA::Experimental::Internal::RChunkLoader<Args...>>(
-         fTreeName, fFileName, fChunkSize, fCols, fFilters, fVecSizes, fVecPadding);
+         fTreeName, fFileNames, fChunkSize, fCols, fFilters, fVecSizes, fVecPadding);
       fBatchLoader = std::make_unique<TMVA::Experimental::Internal::RBatchLoader>(fBatchSize, fNumColumns, fMaxBatches);
 
       // Create tensor to load the chunk into
