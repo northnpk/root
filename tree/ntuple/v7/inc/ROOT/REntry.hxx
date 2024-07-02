@@ -33,6 +33,10 @@
 namespace ROOT {
 namespace Experimental {
 
+namespace Internal {
+class RNTupleProcessor;
+}
+
 // clang-format off
 /**
 \class ROOT::Experimental::REntry
@@ -48,6 +52,7 @@ class REntry {
    friend class RNTupleModel;
    friend class RNTupleReader;
    friend class RNTupleFillContext;
+   friend class Internal::RNTupleProcessor;
 
 public:
    /// The field token identifies a top-level field in this entry. It can be used for fast indexing in REntry's
@@ -89,6 +94,11 @@ private:
       fValues.emplace_back(field.BindValue(ptr));
       return ptr;
    }
+
+   /// Update the RValue for a field in the entry. To be used when its underlying RFieldBase changes, which typically
+   /// happens when page source the field values are read from changes.
+   void UpdateValue(RFieldToken token, RFieldBase::RValue &&value) { std::swap(fValues.at(token.fIndex), value); }
+   void UpdateValue(RFieldToken token, RFieldBase::RValue &value) { std::swap(fValues.at(token.fIndex), value); }
 
    void Read(NTupleSize_t index)
    {

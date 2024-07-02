@@ -16,6 +16,7 @@
 #ifndef ROOT7_RPageStorage
 #define ROOT7_RPageStorage
 
+#include <ROOT/RError.hxx>
 #include <ROOT/RCluster.hxx>
 #include <ROOT/RNTupleDescriptor.hxx>
 #include <ROOT/RNTupleMetrics.hxx>
@@ -29,6 +30,7 @@
 #include <string_view>
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <deque>
 #include <functional>
@@ -69,6 +71,9 @@ an ntuple.  Concrete implementations can use a TFile, a raw file, an object stor
 // clang-format on
 class RPageStorage {
 public:
+   /// The page checksum is a 64bit xxhash3
+   static constexpr std::size_t kNBytesPageChecksum = sizeof(std::uint64_t);
+
    /// The interface of a task scheduler to schedule page (de)compression tasks
    class RTaskScheduler {
    public:
@@ -84,16 +89,42 @@ public:
    /// RSealedPage does _not_ own the buffer it is pointing to in order to not interfere with the memory management
    /// of concrete page sink and page source implementations.
    struct RSealedPage {
+   private:
       const void *fBuffer = nullptr;
-      std::uint32_t fSize = 0;
+      std::uint32_t fBufferSize = 0; ///< Size of the page payload and the trailing checksum (if available)
       std::uint32_t fNElements = 0;
+      bool fHasChecksum = false; ///< If set, the last 8 bytes of the buffer are the xxhash of the rest of the buffer
 
+   public:
       RSealedPage() = default;
-      RSealedPage(const void *b, std::uint32_t s, std::uint32_t n) : fBuffer(b), fSize(s), fNElements(n) {}
+      RSealedPage(const void *buffer, std::uint32_t bufferSize, std::uint32_t nElements, bool hasChecksum = false)
+         : fBuffer(buffer), fBufferSize(bufferSize), fNElements(nElements), fHasChecksum(hasChecksum)
+      {
+      }
       RSealedPage(const RSealedPage &other) = default;
       RSealedPage &operator=(const RSealedPage &other) = default;
       RSealedPage(RSealedPage &&other) = default;
       RSealedPage& operator =(RSealedPage &&other) = default;
+
+      const void *GetBuffer() const { return fBuffer; }
+      void SetBuffer(const void *buffer) { fBuffer = buffer; }
+
+      std::uint32_t GetDataSize() const
+      {
+         assert(fBufferSize >= fHasChecksum * kNBytesPageChecksum);
+         return fBufferSize - fHasChecksum * kNBytesPageChecksum;
+      }
+      std::uint32_t GetBufferSize() const { return fBufferSize; }
+      void SetBufferSize(std::uint32_t bufferSize) { fBufferSize = bufferSize; }
+
+      std::uint32_t GetNElements() const { return fNElements; }
+      void SetNElements(std::uint32_t nElements) { fNElements = nElements; }
+
+      bool GetHasChecksum() const { return fHasChecksum; }
+      void SetHasChecksum(bool hasChecksum) { fHasChecksum = hasChecksum; }
+
+      void ChecksumIfEnabled();
+      RResult<void> VerifyChecksumIfEnabled() const;
    };
 
    using SealedPageSequence_t = std::deque<RSealedPage>;
@@ -183,6 +214,21 @@ public:
    using Callback_t = std::function<void(RPageSink &)>;
 
 protected:
+   /// Parameters for the SealPage() method
+   struct RSealPageConfig {
+      const RPage *fPage = nullptr;                 ///< Input page to be sealed
+      const RColumnElementBase *fElement = nullptr; ///< Corresponds to the page's elements, for size calculation etc.
+      int fCompressionSetting = 0;                  ///< Compression algorithm and level to apply
+      /// Adds a 8 byte little-endian xxhash3 checksum to the page payload. The buffer has to be large enough to
+      /// to store the additional 8 bytes.
+      bool fWriteChecksum = true;
+      /// If false, the output buffer must not point to the input page buffer, which would otherwise be an option
+      /// if the page is mappable and should not be compressed
+      bool fAllowAlias = false;
+      /// Location for sealed output. The memory buffer has to be large enough.
+      void *fBuffer = nullptr;
+   };
+
    std::unique_ptr<RNTupleWriteOptions> fOptions;
 
    /// Helper to zip pages and header/footer; includes a 16MB (kMAXZIPBUF) zip buffer.
@@ -191,15 +237,14 @@ protected:
    std::unique_ptr<RNTupleCompressor> fCompressor;
 
    /// Helper for streaming a page. This is commonly used in derived, concrete page sinks. Note that if
-   /// compressionSetting is 0 (uncompressed) and the page is mappable, the returned sealed page will
-   /// point directly to the input page buffer.  Otherwise, the sealed page references an internal buffer
+   /// compressionSetting is 0 (uncompressed) and the page is mappable and not checksummed, the returned sealed page
+   /// will point directly to the input page buffer.  Otherwise, the sealed page references an internal buffer
    /// of fCompressor.  Thus, the buffer pointed to by the RSealedPage should never be freed.
    /// Usage of this method requires construction of fCompressor.
    RSealedPage SealPage(const RPage &page, const RColumnElementBase &element);
 
-   /// Seal a page using the provided buffer.
-   static RSealedPage SealPage(const RPage &page, const RColumnElementBase &element, int compressionSetting, void *buf,
-                               bool allowAlias = true);
+   /// Seal a page using the provided info.
+   static RSealedPage SealPage(const RSealPageConfig &config);
 
 private:
    /// Flag if sink was initialized
@@ -472,6 +517,8 @@ private:
    RNTupleDescriptor fDescriptor;
    mutable std::shared_mutex fDescriptorLock;
    REntryRange fEntryRange; ///< Used by the cluster pool to prevent reading beyond the given range
+   bool fHasStructure = false; ///< Set to true once LoadStructure() is called
+   bool fIsAttached = false;   ///< Set to true once Attach() is called
 
 protected:
    /// Default I/O performance counters that get registered in fMetrics
@@ -521,7 +568,11 @@ protected:
    /// Populated pages might be shared; the page pool might, at some point, be used by multiple page sources
    std::shared_ptr<RPagePool> fPagePool;
 
+   virtual void LoadStructureImpl() = 0;
+   /// LoadStructureImpl() has been called before AttachImpl() is called
    virtual RNTupleDescriptor AttachImpl() = 0;
+   /// Returns a new, unattached page source for the same data set
+   virtual std::unique_ptr<RPageSource> CloneImpl() const = 0;
    // Only called if a task scheduler is set. No-op be default.
    virtual void UnzipClusterImpl(RCluster *cluster);
 
@@ -553,8 +604,10 @@ public:
    /// Guess the concrete derived page source from the file name (location)
    static std::unique_ptr<RPageSource> Create(std::string_view ntupleName, std::string_view location,
                                               const RNTupleReadOptions &options = RNTupleReadOptions());
-   /// Open the same storage multiple time, e.g. for reading in multiple threads
-   virtual std::unique_ptr<RPageSource> Clone() const = 0;
+   /// Open the same storage multiple time, e.g. for reading in multiple threads.
+   /// If the source is already attached, the clone will be attached, too. The clone will use, however,
+   /// it's own connection to the underlying storage (e.g., file descriptor, XRootD handle, etc.)
+   std::unique_ptr<RPageSource> Clone() const;
 
    EPageStorageType GetType() final { return EPageStorageType::kSource; }
    const RNTupleReadOptions &GetReadOptions() const { return fOptions; }
@@ -574,8 +627,13 @@ public:
    ColumnHandle_t AddColumn(DescriptorId_t fieldId, const RColumn &column) override;
    void DropColumn(ColumnHandle_t columnHandle) override;
 
-   /// Open the physical storage container for the tree
-   void Attach() { GetExclDescriptorGuard().MoveIn(AttachImpl()); }
+   /// Loads header and footer without decompressing or deserializing them. This can be used to asynchronously open
+   /// a file in the background. The method is idempotent and it is called as a first step in Attach().
+   /// Pages sources may or may not make use of splitting loading and processing meta-data.
+   /// Therefore, LoadStructure() may do nothing and defer loading the meta-data to Attach().
+   void LoadStructure();
+   /// Open the physical storage container and deserialize header and footer
+   void Attach();
    NTupleSize_t GetNEntries();
    NTupleSize_t GetNElements(ColumnHandle_t columnHandle);
    ColumnId_t GetColumnId(ColumnHandle_t columnHandle);
@@ -603,7 +661,8 @@ public:
    /// The optimization of directly mapping pages is left to the concrete page source implementations.
    /// Usage of this method requires construction of fDecompressor. Memory is allocated via
    /// `RPageAllocatorHeap`; use `RPageAllocatorHeap::DeletePage()` to deallocate returned pages.
-   RPage UnsealPage(const RSealedPage &sealedPage, const RColumnElementBase &element, DescriptorId_t physicalColumnId);
+   RResult<RPage>
+   UnsealPage(const RSealedPage &sealedPage, const RColumnElementBase &element, DescriptorId_t physicalColumnId);
 
    /// Populates all the pages of the given cluster ids and columns; it is possible that some columns do not
    /// contain any pages.  The page source may load more columns than the minimal necessary set from `columns`.

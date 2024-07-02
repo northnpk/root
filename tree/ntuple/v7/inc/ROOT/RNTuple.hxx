@@ -93,7 +93,7 @@ private:
    std::uint64_t fNBytesFooter = 0;
    /// The size of the uncompressed ntuple footer
    std::uint64_t fLenFooter = 0;
-   /// The maximum size for a TKey payload. Payloads bigger than this size will be chained as multiple blobs.
+   /// The maximum size for a TKey payload. Payloads bigger than this size will be written as multiple blobs.
    std::uint64_t fMaxKeySize = 0;
 
    TFile *fFile = nullptr; ///<! The file from which the ntuple was streamed, registered in the custom streamer

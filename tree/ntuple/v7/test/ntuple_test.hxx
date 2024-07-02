@@ -111,6 +111,7 @@ using RPrintSchemaVisitor = ROOT::Experimental::RPrintSchemaVisitor;
 using RRawFile = ROOT::Internal::RRawFile;
 template <class T>
 using RResult = ROOT::Experimental::RResult<T>;
+using EContainerFormat = RNTupleFileWriter::EContainerFormat;
 
 /**
  * An RAII wrapper around an open temporary file on disk. It cleans up the guarded file when the wrapper object
@@ -136,5 +137,17 @@ public:
    // for debugging purposes. Should only be used locally and never pushed.
    void PreserveFile() { fPreserveFile = true; }
 };
+
+#ifdef R__USE_IMT
+struct IMTRAII {
+   IMTRAII() { ROOT::EnableImplicitMT(); }
+   ~IMTRAII() { ROOT::DisableImplicitMT(); }
+};
+#endif
+
+/// Creates an uncompressed RNTuple called "ntpl" with three float fields, px, py, pz, with a single entry.
+/// The page of px has a wrong checksum. The page of py has corrupted data. The page of pz is valid.
+/// The function is backend agnostic (file, DAOS, ...).
+void CreateCorruptedRNTuple(const std::string &uri);
 
 #endif

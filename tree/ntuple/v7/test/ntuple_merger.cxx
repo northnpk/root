@@ -50,14 +50,16 @@ TEST(RPageStorage, ReadSealedPages)
    RClusterIndex index(source.GetSharedDescriptorGuard()->FindClusterId(columnId, 0), 0);
    RPageStorage::RSealedPage sealedPage;
    source.LoadSealedPage(columnId, index, sealedPage);
-   ASSERT_EQ(1U, sealedPage.fNElements);
-   ASSERT_EQ(4U, sealedPage.fSize);
-   auto buffer = std::make_unique<unsigned char[]>(sealedPage.fSize);
-   sealedPage.fBuffer = buffer.get();
+   ASSERT_EQ(1U, sealedPage.GetNElements());
+   ASSERT_EQ(4U, sealedPage.GetDataSize());
+   ASSERT_EQ(12U, sealedPage.GetBufferSize());
+   auto buffer = std::make_unique<unsigned char[]>(sealedPage.GetBufferSize());
+   sealedPage.SetBuffer(buffer.get());
    source.LoadSealedPage(columnId, index, sealedPage);
-   ASSERT_EQ(1U, sealedPage.fNElements);
-   ASSERT_EQ(4U, sealedPage.fSize);
-   EXPECT_EQ(42, ReadRawInt(sealedPage.fBuffer));
+   ASSERT_EQ(1U, sealedPage.GetNElements());
+   ASSERT_EQ(4U, sealedPage.GetDataSize());
+   ASSERT_EQ(12U, sealedPage.GetBufferSize());
+   EXPECT_EQ(42, ReadRawInt(sealedPage.GetBuffer()));
 
    // Check second, big cluster
    auto clusterId = source.GetSharedDescriptorGuard()->FindClusterId(columnId, 1);
@@ -67,11 +69,14 @@ TEST(RPageStorage, ReadSealedPages)
    EXPECT_GT(pageRange.fPageInfos.size(), 1U);
    std::uint32_t firstElementInPage = 0;
    for (const auto &pi : pageRange.fPageInfos) {
-      buffer = std::make_unique<unsigned char[]>(pi.fLocator.fBytesOnStorage);
-      sealedPage.fBuffer = buffer.get();
+      sealedPage.SetBuffer(nullptr);
       source.LoadSealedPage(columnId, RClusterIndex(clusterId, firstElementInPage), sealedPage);
-      ASSERT_GE(sealedPage.fSize, 4U);
-      EXPECT_EQ(firstElementInPage, ReadRawInt(sealedPage.fBuffer));
+      buffer = std::make_unique<unsigned char[]>(sealedPage.GetBufferSize());
+      sealedPage.SetBuffer(buffer.get());
+      source.LoadSealedPage(columnId, RClusterIndex(clusterId, firstElementInPage), sealedPage);
+      ASSERT_GE(sealedPage.GetBufferSize(), 12U);
+      ASSERT_GE(sealedPage.GetDataSize(), 4U);
+      EXPECT_EQ(firstElementInPage, ReadRawInt(sealedPage.GetBuffer()));
       firstElementInPage += pi.fNElements;
    }
 }

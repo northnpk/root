@@ -228,6 +228,7 @@ TEST_F(RPageStorageDaos, CagedPages)
 
    auto model = RNTupleModel::Create();
    auto wrVector = model->MakeField<std::vector<double>>("vector");
+   auto wrCnt = model->MakeField<std::uint32_t>("cnt");
 
    TRandom3 rnd(42);
    double chksumWrite = 0.0;
@@ -238,6 +239,7 @@ TEST_F(RPageStorageDaos, CagedPages)
       auto ntuple = RNTupleWriter::Recreate(std::move(model), ntupleName, daosUri, options);
       constexpr unsigned int nEvents = 180000;
       for (unsigned int i = 0; i < nEvents; ++i) {
+         *wrCnt = i;
          auto nVec = 1 + floor(rnd.Rndm() * 1000.);
          wrVector->resize(nVec);
          for (unsigned int n = 0; n < nVec; ++n) {
@@ -266,12 +268,83 @@ TEST_F(RPageStorageDaos, CagedPages)
       EXPECT_EQ(chksumRead, chksumWrite);
    }
 
-   // Wrongly attempt to read a single caged page when cluster cache is disabled.
    {
       RNTupleReadOptions options;
       options.SetClusterCache(RNTupleReadOptions::EClusterCache::kOff);
       auto ntuple = RNTupleReader::Open(ntupleName, daosUri, options);
+      // Attempt to read a caged page data when cluster cache is disabled.
       EXPECT_THROW(ntuple->LoadEntry(1), ROOT::Experimental::RException);
+
+      // However, loading a single sealed page should work
+      auto pageSource = RPageSource::Create(ntupleName, daosUri, options);
+      pageSource->Attach();
+      const auto &desc = pageSource->GetSharedDescriptorGuard()->Clone();
+      const auto colId = desc->FindPhysicalColumnId(desc->FindFieldId("cnt"), 0);
+      const auto clusterId = desc->FindClusterId(colId, 0);
+
+      RPageStorage::RSealedPage sealedPage;
+      pageSource->LoadSealedPage(colId, RClusterIndex{clusterId, 0}, sealedPage);
+      EXPECT_GT(sealedPage.GetNElements(), 0);
+      auto pageBuf = std::make_unique<unsigned char[]>(sealedPage.GetBufferSize());
+      sealedPage.SetBuffer(pageBuf.get());
+      pageSource->LoadSealedPage(colId, RClusterIndex{clusterId, 0}, sealedPage);
+
+      auto colType = desc->GetColumnDescriptor(colId).GetModel().GetType();
+      auto elem = ROOT::Experimental::Internal::RColumnElementBase::Generate<std::uint32_t>(colType);
+      auto page = pageSource->UnsealPage(sealedPage, *elem, colId).Unwrap();
+      EXPECT_GT(page.GetNElements(), 0);
+      auto ptrData = static_cast<std::uint32_t *>(page.GetBuffer());
+      for (std::uint32_t i = 0; i < page.GetNElements(); ++i) {
+         EXPECT_EQ(i, *(ptrData + i));
+      }
    }
+}
+
+TEST_F(RPageStorageDaos, Checksum)
+{
+   std::string daosUri = RegisterLabel("ntuple-test-checksum");
+   CreateCorruptedRNTuple(daosUri);
+
+   {
+      IMTRAII _;
+
+      auto reader = RNTupleReader::Open("ntpl", daosUri);
+      EXPECT_EQ(1u, reader->GetNEntries());
+
+      auto viewPx = reader->GetView<float>("px");
+      auto viewPy = reader->GetView<float>("py");
+      auto viewPz = reader->GetView<float>("pz");
+      EXPECT_THROW(viewPz(0), RException); // we run under IMT, even the valid column should fail
+   }
+
+   auto reader = RNTupleReader::Open("ntpl", daosUri);
+   EXPECT_EQ(1u, reader->GetNEntries());
+
+   auto viewPx = reader->GetView<float>("px");
+   auto viewPy = reader->GetView<float>("py");
+   auto viewPz = reader->GetView<float>("pz");
+   EXPECT_THROW(viewPx(0), RException);
+   EXPECT_THROW(viewPy(0), RException);
+   EXPECT_FLOAT_EQ(3.0, viewPz(0));
+
+   DescriptorId_t pxColId;
+   DescriptorId_t pyColId;
+   DescriptorId_t clusterId;
+   auto pageSource = RPageSource::Create("ntpl", daosUri);
+   pageSource->Attach();
+   {
+      auto descGuard = pageSource->GetSharedDescriptorGuard();
+      pxColId = descGuard->FindPhysicalColumnId(descGuard->FindFieldId("px"), 0);
+      pyColId = descGuard->FindPhysicalColumnId(descGuard->FindFieldId("py"), 0);
+      clusterId = descGuard->FindClusterId(pxColId, 0);
+   }
+   RClusterIndex index{clusterId, 0};
+
+   RPageStorage::RSealedPage sealedPage;
+   constexpr std::size_t bufSize = 12;
+   unsigned char buffer[bufSize];
+   sealedPage.SetBuffer(buffer);
+   EXPECT_THROW(pageSource->LoadSealedPage(pxColId, index, sealedPage), RException);
+   EXPECT_THROW(pageSource->LoadSealedPage(pyColId, index, sealedPage), RException);
 }
 #endif

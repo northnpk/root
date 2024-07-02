@@ -27,7 +27,8 @@
 #include <deque>
 
 Long64_t ROOT::Experimental::RNTuple::Merge(TCollection *inputs, TFileMergeInfo *mergeInfo)
-{
+// IMPORTANT: this function must not throw, as it is used in exception-unsafe code (TFileMerger).
+try {
    // Check the inputs
    if (!inputs || inputs->GetEntries() < 3 || !mergeInfo)
       return -1;
@@ -94,6 +95,9 @@ Long64_t ROOT::Experimental::RNTuple::Merge(TCollection *inputs, TFileMergeInfo 
    *this = *outFile->Get<RNTuple>(ntupleName.c_str());
 
    return 0;
+} catch (const RException &ex) {
+   Error("RNTuple::Merge", "Exception thrown while merging: %s", ex.what());
+   return -1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -234,8 +238,8 @@ void ROOT::Experimental::Internal::RNTupleMerger::Merge(std::span<RPageSource *>
 
                // The way LoadSealedPage works might require a double call
                // See the implementation. Here we do this in any case...
-               auto buffer = std::make_unique<unsigned char[]>(sealedPage.fSize);
-               sealedPage.fBuffer = buffer.get();
+               auto buffer = std::make_unique<unsigned char[]>(sealedPage.GetBufferSize());
+               sealedPage.SetBuffer(buffer.get());
                source->LoadSealedPage(columnId, clusterIndex, sealedPage);
 
                buffers.push_back(std::move(buffer));

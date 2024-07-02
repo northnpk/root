@@ -111,7 +111,9 @@ jobs:
       - ${{ matrix.arch }}
       - ${{ matrix.platform }}
 
-    name: ${{ matrix.platform }} ${{ matrix.arch }} ${{ join( matrix.overrides, ', ' ) }}
+    name: |
+      ${{ matrix.platform }} ${{ matrix.arch }} 
+      ${{ (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && join( matrix.overrides, ', ' )) || '' }}
 
     steps:
       - name: Checkout
@@ -365,7 +367,7 @@ jobs:
           - image: alma9
             is_special: true
             property: march_native
-            overrides: ["CMAKE_CXX_FLAGS=-march=native", "CMAKE_C_FLAGS=-march=native"]
+            overrides: ["CMAKE_BUILD_TYPE=RelWithDebInfo", "CMAKE_CXX_FLAGS=-march=native", "CMAKE_C_FLAGS=-march=native", "fortran=OFF"]
           - image: alma9-clang
             is_special: true
             property: clang
@@ -376,7 +378,9 @@ jobs:
       - linux
       - x64
 
-    name: ${{ matrix.image }} ${{ matrix.property }} ${{ join( matrix.overrides, ', ' ) }}
+    name: |
+      ${{ matrix.image }} ${{ matrix.property }}
+      ${{ (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && join( matrix.overrides, ', ' )) || '' }}
 
     container:
       image: registry.cern.ch/root-ci/${{ matrix.image }}:buildready # ALSO UPDATE BELOW!

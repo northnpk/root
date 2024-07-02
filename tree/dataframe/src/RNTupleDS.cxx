@@ -374,10 +374,11 @@ void RNTupleDS::AddField(const RNTupleDescriptor &desc, std::string_view colName
    fProtoFields.emplace_back(std::move(valueField));
 }
 
-RNTupleDS::RNTupleDS(std::unique_ptr<Internal::RPageSource> pageSource) : fPrincipalSource(std::move(pageSource))
+RNTupleDS::RNTupleDS(std::unique_ptr<Internal::RPageSource> pageSource)
 {
-   fPrincipalSource->Attach();
-   fPrincipalDescriptor = fPrincipalSource->GetSharedDescriptorGuard()->Clone();
+   pageSource->Attach();
+   fPrincipalDescriptor = pageSource->GetSharedDescriptorGuard()->Clone();
+   fStagingArea.emplace_back(std::move(pageSource));
 
    AddField(*fPrincipalDescriptor, "", fPrincipalDescriptor->GetFieldZeroId(),
             std::vector<ROOT::Experimental::RNTupleDS::RFieldInfo>());
@@ -425,6 +426,7 @@ RNTupleDS::RNTupleDS(std::string_view ntupleName, const std::vector<std::string>
 {
    fNTupleName = ntupleName;
    fFileNames = fileNames;
+   fStagingArea.resize(fFileNames.size());
 }
 
 RDF::RDataSource::Record_t RNTupleDS::GetColumnReadersImpl(std::string_view /* name */, const std::type_info & /* ti */)
@@ -454,10 +456,39 @@ RNTupleDS::GetColumnReaders(unsigned int slot, std::string_view name, const std:
    return reader;
 }
 
-bool RNTupleDS::SetEntry(unsigned int, ULong64_t)
+void RNTupleDS::ExecStaging()
 {
-   // Old API, unsused
-   return true;
+   while (true) {
+      std::unique_lock lock(fMutexStaging);
+      fCvStaging.wait(lock, [this] { return fIsReadyForStaging || fStagingThreadShouldTerminate; });
+      if (fStagingThreadShouldTerminate)
+         return;
+
+      assert(!fHasNextSources);
+      StageNextSources();
+      fHasNextSources = true;
+      fIsReadyForStaging = false;
+
+      lock.unlock();
+      fCvStaging.notify_one();
+   }
+}
+
+void RNTupleDS::StageNextSources()
+{
+   const auto nFiles = fFileNames.empty() ? 1 : fFileNames.size();
+   for (auto i = fNextFileIndex; (i < nFiles) && ((i - fNextFileIndex) < fNSlots); ++i) {
+      if (fStagingThreadShouldTerminate)
+         return;
+
+      if (fStagingArea[i]) {
+         // The first file is already open and was used to read the schema
+         assert(i == 0);
+      } else {
+         fStagingArea[i] = CreatePageSource(fNTupleName, fFileNames[i]);
+         fStagingArea[i]->LoadStructure();
+      }
+   }
 }
 
 void RNTupleDS::PrepareNextRanges()
@@ -473,14 +504,14 @@ void RNTupleDS::PrepareNextRanges()
       while ((fNextRanges.size() < fNSlots) && (fNextFileIndex < nFiles)) {
          REntryRangeDS range;
 
-         if (fPrincipalSource) {
-            // Avoid reopening the first file, which has been opened already to read the schema
-            assert(fNextFileIndex == 0);
-            std::swap(fPrincipalSource, range.fSource);
-         } else {
+         std::swap(fStagingArea[fNextFileIndex], range.fSource);
+
+         if (!range.fSource) {
+            // Typically, the prestaged source should have been present. Only if some of the files are empty, we need
+            // to open and attach files here.
             range.fSource = CreatePageSource(fNTupleName, fFileNames[fNextFileIndex]);
-            range.fSource->Attach();
          }
+         range.fSource->Attach();
          fNextFileIndex++;
 
          auto nEntries = range.fSource->GetNEntries();
@@ -499,14 +530,12 @@ void RNTupleDS::PrepareNextRanges()
    unsigned int nSlotsPerFile = fNSlots / nRemainingFiles;
    for (std::size_t i = 0; (fNextRanges.size() < fNSlots) && (fNextFileIndex < nFiles); ++i) {
       std::unique_ptr<Internal::RPageSource> source;
-      if (fPrincipalSource) {
-         // Avoid reopening the first file, which has been opened already to read the schema
-         assert(fNextFileIndex == 0);
-         std::swap(source, fPrincipalSource);
-      } else {
+      std::swap(fStagingArea[fNextFileIndex], source);
+      if (!source) {
+         // Empty files trigger this condition
          source = CreatePageSource(fNTupleName, fFileNames[fNextFileIndex]);
-         source->Attach();
       }
+      source->Attach();
       fNextFileIndex++;
 
       auto nEntries = source->GetNEntries();
@@ -548,7 +577,6 @@ void RNTupleDS::PrepareNextRanges()
             range.fSource = std::move(source);
          } else {
             range.fSource = source->Clone();
-            range.fSource->Attach();
          }
          range.fSource->SetEntryRange({start, end - start});
          range.fFirstEntry = start;
@@ -561,9 +589,6 @@ void RNTupleDS::PrepareNextRanges()
 std::vector<std::pair<ULong64_t, ULong64_t>> RNTupleDS::GetEntryRanges()
 {
    std::vector<std::pair<ULong64_t, ULong64_t>> ranges;
-   if (fNextRanges.empty())
-      return ranges;
-   assert(fNextRanges.size() <= fNSlots);
 
    // We need to distinguish between single threaded and multi-threaded runs.
    // In single threaded mode, InitSlot is only called once and column readers have to be rewired
@@ -577,9 +602,34 @@ std::vector<std::pair<ULong64_t, ULong64_t>> RNTupleDS::GetEntryRanges()
       }
    }
 
-   fCurrentRanges.clear();
-   std::swap(fCurrentRanges, fNextRanges);
-   PrepareNextRanges();
+   // If we have fewer files than slots and we run multiple event loops, we can reuse fCurrentRanges and don't need
+   // to worry about loading the fNextRanges. I.e., in this case we don't enter the if block.
+   if (fCurrentRanges.empty() || (fSeenEntries > 0)) {
+      // Otherwise, i.e. start of the first event loop or in the middle of the event loop, prepare the next ranges
+      // and swap with the current ones.
+      {
+         std::unique_lock lock(fMutexStaging);
+         fCvStaging.wait(lock, [this] { return fHasNextSources; });
+      }
+      PrepareNextRanges();
+      if (fNextRanges.empty()) {
+         // No more data
+         return ranges;
+      }
+
+      assert(fNextRanges.size() <= fNSlots);
+
+      fCurrentRanges.clear();
+      std::swap(fCurrentRanges, fNextRanges);
+   }
+
+   // Stage next batch of files for the next call to GetEntryRanges()
+   {
+      std::lock_guard _(fMutexStaging);
+      fIsReadyForStaging = true;
+      fHasNextSources = false;
+   }
+   fCvStaging.notify_one();
 
    // Create ranges for the RDF loop manager from the list of REntryRangeDS records.
    // The entry ranges that are relative to the page source in REntryRangeDS are translated into absolute
@@ -650,12 +700,21 @@ void RNTupleDS::Initialize()
 {
    fSeenEntries = 0;
    fNextFileIndex = 0;
-   if (!fCurrentRanges.empty() && (fFileNames.size() <= fNSlots)) {
-      assert(fNextRanges.empty());
-      std::swap(fCurrentRanges, fNextRanges);
-      fNextFileIndex = std::max(fFileNames.size(), std::size_t(1));
+   fIsReadyForStaging = fHasNextSources = fStagingThreadShouldTerminate = false;
+   fThreadStaging = std::thread(&RNTupleDS::ExecStaging, this);
+   assert(fNextRanges.empty());
+
+   if (fCurrentRanges.empty() || (fFileNames.size() > fNSlots)) {
+      // First event loop or large number of files: start the staging process.
+      {
+         std::lock_guard _(fMutexStaging);
+         fIsReadyForStaging = true;
+      }
+      fCvStaging.notify_one();
    } else {
-      PrepareNextRanges();
+      // Otherwise, we will reuse fCurrentRanges. Make sure that staging and preparing next ranges will be a noop
+      // (already at the end of the list of files).
+      fNextFileIndex = std::max(fFileNames.size(), std::size_t(1));
    }
 }
 
@@ -666,11 +725,19 @@ void RNTupleDS::Finalize()
          r->Disconnect(false /* keepValue */);
       }
    }
+   {
+      std::lock_guard _(fMutexStaging);
+      fStagingThreadShouldTerminate = true;
+   }
+   fCvStaging.notify_one();
+   fThreadStaging.join();
    // If we have a chain with more files than the number of slots, the files opened at the end of the
    // event loop won't be reused when the event loop restarts, so we can close them.
    if (fFileNames.size() > fNSlots) {
       fCurrentRanges.clear();
       fNextRanges.clear();
+      fStagingArea.clear();
+      fStagingArea.resize(fFileNames.size());
    }
 }
 

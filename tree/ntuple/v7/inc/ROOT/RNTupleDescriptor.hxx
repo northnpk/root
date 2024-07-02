@@ -112,10 +112,10 @@ public:
    DescriptorId_t GetId() const { return fFieldId; }
    std::uint32_t GetFieldVersion() const { return fFieldVersion; }
    std::uint32_t GetTypeVersion() const { return fTypeVersion; }
-   std::string GetFieldName() const { return fFieldName; }
-   std::string GetFieldDescription() const { return fFieldDescription; }
-   std::string GetTypeName() const { return fTypeName; }
-   std::string GetTypeAlias() const { return fTypeAlias; }
+   const std::string &GetFieldName() const { return fFieldName; }
+   const std::string &GetFieldDescription() const { return fFieldDescription; }
+   const std::string &GetTypeName() const { return fTypeName; }
+   const std::string &GetTypeAlias() const { return fTypeAlias; }
    std::uint64_t GetNRepetitions() const { return fNRepetitions; }
    ENTupleStructure GetStructure() const { return fStructure; }
    DescriptorId_t GetParentId() const { return fParentId; }
@@ -266,6 +266,8 @@ public:
          std::uint32_t fNElements = std::uint32_t(-1);
          /// The meaning of fLocator depends on the storage backend.
          RNTupleLocator fLocator;
+         /// If true, the 8 bytes following the serialized page are an xxhash of the on-disk page data
+         bool fHasChecksum = false;
 
          bool operator==(const RPageInfo &other) const {
             return fNElements == other.fNElements && fLocator == other.fLocator;
@@ -437,8 +439,8 @@ public:
    EExtraTypeInfoIds GetContentId() const { return fContentId; }
    std::uint32_t GetTypeVersionFrom() const { return fTypeVersionFrom; }
    std::uint32_t GetTypeVersionTo() const { return fTypeVersionTo; }
-   std::string GetTypeName() const { return fTypeName; }
-   std::string GetContent() const { return fContent; }
+   const std::string &GetTypeName() const { return fTypeName; }
+   const std::string &GetContent() const { return fContent; }
 };
 
 // clang-format off
@@ -862,8 +864,8 @@ public:
 
    RExtraTypeInfoDescriptorIterable GetExtraTypeInfoIterable() const { return RExtraTypeInfoDescriptorIterable(*this); }
 
-   std::string GetName() const { return fName; }
-   std::string GetDescription() const { return fDescription; }
+   const std::string &GetName() const { return fName; }
+   const std::string &GetDescription() const { return fDescription; }
 
    std::size_t GetNFields() const { return fFieldDescriptors.size(); }
    std::size_t GetNLogicalColumns() const { return fColumnDescriptors.size(); }

@@ -547,13 +547,15 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
 
       if (obj->InheritsFrom(THStack::Class())) {
          // workaround for THStack, create extra components before sending to client
-         auto hs = static_cast<THStack *>(obj);
-         if (strlen(obj->GetTitle()) > 0)
-            need_title = obj->GetTitle();
-         TVirtualPad::TContext ctxt(pad, kFALSE);
-         hs->BuildPrimitives(iter.GetOption());
-         has_histo = true;
-         need_frame = true;
+         if (!opt.Contains("PADS") && !opt.Contains("SAME")) {
+            auto hs = static_cast<THStack *>(obj);
+            if (strlen(obj->GetTitle()) > 0)
+               need_title = obj->GetTitle();
+            TVirtualPad::TContext ctxt(pad, kFALSE);
+            hs->BuildPrimitives(iter.GetOption());
+            has_histo = true;
+            need_frame = true;
+         }
       } else if (obj->InheritsFrom(TMultiGraph::Class())) {
          // workaround for TMultiGraph
          if (opt.Contains("A")) {
@@ -868,6 +870,18 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
 
          THStack *hs = static_cast<THStack *>(obj);
 
+         TString hopt = iter.GetOption();
+         hopt.ToLower();
+         if (!hopt.Contains("nostack") && !hopt.Contains("candle") && !hopt.Contains("violin") && !hopt.Contains("pads")) {
+            if (!IsReadOnly() && !fUsedObjs[hs]) {
+               hs->Modified();
+               fUsedObjs[hs] = true;
+            }
+            auto arr = hs->GetStack();
+            arr->SetName(hs->GetName()); // mark list
+            paddata.NewPrimitive(arr, "__ignore_drawing__").SetSnapshot(TWebSnapshot::kObject, arr);
+         }
+
          paddata.NewPrimitive(obj, iter.GetOption()).SetSnapshot(TWebSnapshot::kObject, obj);
 
          first_obj = hs->GetNhists() > 0; // real drawing only if there are histograms
@@ -994,6 +1008,7 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
       fAllPads[n]->fPrimitives = all_primitives[n];
    }
    fAllPads.clear();
+   fUsedObjs.clear();
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1498,12 +1513,9 @@ Bool_t TWebCanvas::DecodePadOptions(const std::string &msg, bool process_execs)
             hmin = hmax = -1111;
 
          if (is_stack) {
-            TString opt = objlnk->GetOption();
-            if (!opt.Contains("nostack", TString::kIgnoreCase) && !opt.Contains("lego", TString::kIgnoreCase)) {
-               hist->SetMinimum(hmin);
-               hist->SetMaximum(hmax);
-               hist->SetBit(TH1::kIsZoomed, hmin != hmax);
-            }
+            hist->SetMinimum(hmin);
+            hist->SetMaximum(hmax);
+            hist->SetBit(TH1::kIsZoomed, hmin != hmax);
          } else if (!hist_holder || (hist_holder->IsA() == TScatter::Class())) {
             hist->SetMinimum(hmin);
             hist->SetMaximum(hmax);

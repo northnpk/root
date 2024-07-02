@@ -166,7 +166,16 @@ void RModel::AddInitializedTensor(std::string tensor_name, ETensorType type, std
     }
     InitializedTensor new_tensor {type, shape, data};
     fInitializedTensors[tensor_name] = new_tensor;
+}
 
+void RModel::AddConstantTensor(std::string tensor_name, ETensorType type, std::vector<std::size_t> shape, std::shared_ptr<void> data) {
+    tensor_name = UTILITY::Clean_name(tensor_name);
+    //NB: own data
+    if (CheckIfTensorAlreadyExist(tensor_name)) {
+        throw std::runtime_error("TMVA-SOFIE: initialized tensor with name " + tensor_name + " already exists \n");
+    }
+    InitializedTensor new_tensor {type, shape, data, true};   // add here flag to specify is a constant tensor
+    fInitializedTensors[tensor_name] = new_tensor;
 }
 
 bool RModel::IsInitializedTensor(const std::string& tensorName) const {
@@ -254,6 +263,14 @@ std::shared_ptr<void> RModel::GetInitializedTensorData(std::string tensor_name) 
     }
 }
 
+void RModel::SetNotWritableInitializedTensor(const std::string & tensor_name) {
+      auto t = fInitializedTensors.find(tensor_name);
+      if (t == fInitializedTensors.end()) {
+         throw std::runtime_error("TMVA-SOFIE: initialized tensor " + tensor_name + " not found when trying to get its info");
+      }
+      t->second.SetNotWritable();
+   }
+
 void RModel::Initialize(int batchSize, bool verbose) {
 
    fIntermediateTensorInfos.clear();
@@ -266,7 +283,7 @@ void RModel::Initialize(int batchSize, bool verbose) {
    for (auto &input : originalInputTensorInfos) {
       if (verbose) std::cout << "looking at the tensor " << input.first << std::endl;
       // if a batch size is provided convert batch size
-      // assume is parametrized as "bs" or "batch_size"
+      // assume is parameterised as "bs" or "batch_size"
       if (batchSize > 0) {
          // std::vector<Dim> shape;
          // shape.reserve(input.second.shape.size());
@@ -335,29 +352,42 @@ void RModel::Initialize(int batchSize, bool verbose) {
 }
 
 void RModel::GenerateInitializedTensorInfo() {
+    if (!fInitializedTensors.empty())
+      fGC += "// initialized tensors\n";
     for (auto& i: fInitializedTensors) {
-        if (i.second.type() == ETensorType::FLOAT) {
-            size_t length = 1;
-            for (auto & dim: i.second.shape()) {
-                length *= dim;
-            }
-            if (!fUseWeightFile) {
-                fGC += "float tensor_" + i.first + "[" + std::to_string(length) + "] = {";
-                float const *data = i.second.data<float>();
-                std::stringstream floats;
-                for (size_t idx = 0; idx < length-1; idx++) {
-                    floats << std::setprecision(std::numeric_limits<float>::max_digits10) << data[idx] << ", ";
-                }
-                floats << std::setprecision(std::numeric_limits<float>::max_digits10) << data[length-1];
-                fGC += floats.str();
-                fGC += "};\n";
-            }
-            else {
-                fGC += "std::vector<float> fTensor_" + i.first + " = std::vector<float>(" + std::to_string(length) + ");\n";
-                fGC += "float * tensor_" + i.first + " = fTensor_" + i.first + ".data();\n";
-            }
 
-        }
+         size_t length = ConvertShapeToLength(i.second.shape());
+            // in case we are not using weight files or for tensor created from Constant operator
+         if (!fUseWeightFile || i.second.IsConstantTensor() ) {
+            //std::cout << "write tensor " << i.first << std::endl;
+            std::stringstream strs;
+            if (i.second.type() == ETensorType::FLOAT) {
+               strs << "float tensor_" << i.first << "[" << length << "] = {";
+               float const *data = i.second.data<float>();
+               for (size_t idx = 0; idx < length; idx++) {
+                  strs << std::setprecision(std::numeric_limits<float>::max_digits10) << data[idx];
+                  if (idx < length-1) strs << ", ";
+               }
+               strs << "};\n";
+            }
+            else if (i.second.type() == ETensorType::INT64) {
+               strs << "int64_t tensor_" << i.first << "[" << length << "] = {";
+               int64_t const *data = i.second.data<int64_t>();
+               for (size_t idx = 0; idx < length; idx++) {
+                  strs << data[idx];
+                  if (idx < length-1) strs << ", ";
+               }
+               strs << "};\n";
+            }
+            fGC += strs.str();
+         }
+         // case of tensors which are read from a file
+         else {
+            if (i.second.type() == ETensorType::FLOAT) {
+               fGC += "std::vector<float> fTensor_" + i.first + " = std::vector<float>(" + std::to_string(length) + ");\n";
+               fGC += "float * tensor_" + i.first + " = fTensor_" + i.first + ".data();\n";
+            }
+         }
     }
 }
 
@@ -483,7 +513,7 @@ void RModel::GenerateOutput() {
       i_input++;
    }
 
-   fGC.pop_back(); // remove last ","
+   if (fInputTensorNames.size() > 0) fGC.pop_back();// remove last ","
    fGC += "){\n";
 
    for (size_t id = 0; id < fOperators.size(); id++) {
@@ -539,7 +569,7 @@ void RModel::GenerateOutput() {
    fGC += "}\n";
 }
 
-void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, long pos) {
+void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, long pos, bool verbose) {
     // session flag is used in operator initialize
     if (static_cast<std::underlying_type_t<Options>>(Options::kNoSession) & options) {
         fUseSession = false;
@@ -563,7 +593,7 @@ void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, lo
     if (static_cast<std::underlying_type_t<Options>>(Options::kGNNComponent) & options)
         fIsGNNComponent = true;
 
-    Initialize(batchSize);
+    Initialize(batchSize, verbose);
     std::string hgname;
     if(!fIsGNNComponent) {
         fGC.clear();
@@ -658,10 +688,12 @@ void RModel::ReadInitializedTensorsFromFile(long pos) {
 
         // loop on tensors and parse the file
         for (auto& i: fInitializedTensors) {
+            // skip Constant and shape tensors
+            if (!i.second.IsWeightTensor()) continue;
+            std::string tensor_name = "tensor_" + i.first;
             if (i.second.type() == ETensorType::FLOAT) {
                 size_t length = 1;
                 length = ConvertShapeToLength(i.second.shape());
-                std::string tensor_name = "tensor_" + i.first;
                 std::string slength = std::to_string(length);
                 fGC += "   f >> tensor_name >> length;\n";
                 fGC += "   if (tensor_name != \"" + tensor_name + "\" ) {\n";
@@ -676,6 +708,11 @@ void RModel::ReadInitializedTensorsFromFile(long pos) {
                 fGC += "    }\n";
                 fGC += "   for (size_t i = 0; i < length; ++i)\n";
                 fGC += "      f >> " + tensor_name + "[i];\n";
+                fGC += "   if (f.fail()) {\n";
+                fGC += "      throw std::runtime_error(\"TMVA-SOFIE failed to read the values for tensor " + tensor_name + "\");\n";
+                fGC += "   }\n";
+            } else {
+               std::runtime_error("tmva-sofie tensor " + tensor_name + " with type " + ConvertTypeToString(i.second.type()) + " cannot be read from a file");
             }
         }
         fGC += "   f.close();\n";
@@ -695,17 +732,21 @@ void RModel::ReadInitializedTensorsFromFile(long pos) {
         fGC += "   }\n";
 
         for (auto &i : fInitializedTensors) {
+            // skip Constant and shape tensors
+            if (!i.second.IsWeightTensor()) continue;
             fGC += "  {\n";
             std::string tensor_name = "tensor_" + i.first;
             if (i.second.type() == ETensorType::FLOAT) {
-                fGC += "      fTensor_" + i.first + " = *reinterpret_cast<std::vector<float>*>(rootFile->Get(\"";
-                fGC += dirName + "/" + tensor_name + "\"));\n";
+               fGC += "      fTensor_" + i.first + " = *reinterpret_cast<std::vector<float>*>(rootFile->Get(\"";
+               fGC += dirName + "/" + tensor_name + "\"));\n";
             } else if (i.second.type() == ETensorType::DOUBLE) {
-                fGC += "      fTensor_" + i.first + " = *reinterpret_cast<std::vector<double>*>(rootFile->Get(\"";
-                fGC += dirName + + "/" + tensor_name + "\"));\n";
+               fGC += "      fTensor_" + i.first + " = *reinterpret_cast<std::vector<double>*>(rootFile->Get(\"";
+               fGC += dirName + + "/" + tensor_name + "\"));\n";
             } else if (i.second.type() == ETensorType::INT64) {
-                fGC += "      fTensor_" + i.first + " = *reinterpret_cast<std::vector<int64_t>*>(rootFile->Get(\"";
-                fGC += dirName + "/" + tensor_name + "\"));\n";
+               fGC += "      fTensor_" + i.first + " = *reinterpret_cast<std::vector<int64_t>*>(rootFile->Get(\"";
+               fGC += dirName + "/" + tensor_name + "\"));\n";
+            } else {
+               std::runtime_error("tmva-sofie tensor " + tensor_name + " with type " + ConvertTypeToString(i.second.type()) + " cannot be read from a ROOT file");
             }
             fGC += "  }\n";
         }
@@ -748,23 +789,29 @@ long RModel::WriteInitializedTensorsToFile(std::string filename) {
         auto outputDir = outputFile->mkdir(dirName.c_str());
 
         for (const auto& item : fInitializedTensors) {
+            // skip Constant tensors and tensors which are not writable (e.g. shape tensors)
+            if (!item.second.IsWeightTensor()) continue;
             std::string tensorName = "tensor_" + item.first;
             size_t length = 1;
             length = ConvertShapeToLength(item.second.shape());
             if(item.second.type() == ETensorType::FLOAT) {
-                const float* data = item.second.data<float>();
+               const float* data = item.second.data<float>();
                 std::vector<float> tensorDataVector(data, data + length);
-                outputDir->WriteObjectAny(&tensorDataVector, "std::vector<float>", tensorName.c_str());
+               outputDir->WriteObjectAny(&tensorDataVector, "std::vector<float>", tensorName.c_str());
             }
             else if(item.second.type() == ETensorType::DOUBLE) {
-                const double* data = item.second.data<double>();
-                std::vector<double> tensorDataVector(data, data + length);
-                outputDir->WriteObjectAny(&tensorDataVector, "std::vector<double>", tensorName.c_str());
+               const double* data = item.second.data<double>();
+               std::vector<double> tensorDataVector(data, data + length);
+               outputDir->WriteObjectAny(&tensorDataVector, "std::vector<double>", tensorName.c_str());
             }
             else if(item.second.type() == ETensorType::INT64) {
-                const int64_t* data = item.second.data<int64_t>();
-                std::vector<int64_t> tensorDataVector(data, data + length);
-                outputDir->WriteObjectAny(&tensorDataVector, "std::vector<int64_t>", tensorName.c_str());
+               const int64_t* data = item.second.data<int64_t>();
+               std::vector<int64_t> tensorDataVector(data, data + length);
+               outputDir->WriteObjectAny(&tensorDataVector, "std::vector<int64_t>", tensorName.c_str());
+            }
+            else {
+               std::runtime_error("tmva-sofie tensor " + tensorName + " with type " + ConvertTypeToString(item.second.type()) +
+                                  " cannot be written to a ROOT file");
             }
         }
         outputFile->Write(filename.c_str());
@@ -784,20 +831,28 @@ long RModel::WriteInitializedTensorsToFile(std::string filename) {
             throw
             std::runtime_error("tmva-sofie failed to open file " + filename + " for tensor weight data");
         for (auto& i: fInitializedTensors) {
-            if (i.second.type() == ETensorType::FLOAT) {
-                size_t length = 1;
-                for (auto &dim : i.second.shape()) {
-                    length *= dim;
-                }
-                std::string tensor_name = "tensor_" + i.first;
-                f << tensor_name << " " << length << "\n";
-                const float * data = i.second.data<float>();
-                for (size_t idx = 0; idx < length - 1; idx++) {
-                    f << std::setprecision(std::numeric_limits<float>::max_digits10) << data[idx] << " ";
-                }
-                f << std::setprecision(std::numeric_limits<float>::max_digits10) << data[length - 1];
-                f << "\n";
+             // skip Constant tensors and not writable tensors (e.g. shape tensors)
+            if (!i.second.IsWeightTensor()) {
+               continue;
             }
+            size_t length = ConvertShapeToLength(i.second.shape());
+            std::string tensor_name = "tensor_" + i.first;
+            f << tensor_name << " " << length << "\n";
+            if (i.second.type() == ETensorType::FLOAT) {
+               const float * data = i.second.data<float>();
+               for (size_t idx = 0; idx < length; idx++) {
+                  // round to zero sub-normal values
+                  float value = data[idx];
+                  if (value != 0. && std::abs(value) < std::numeric_limits<float>::min() ) value = 0;
+                  f << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
+                  f <<  ( (idx < length-1) ? " " : "\n" );
+               }
+            }
+            else {
+               std::runtime_error("tmva-sofie tensor " + tensor_name + " with type " + ConvertTypeToString(i.second.type()) + " cannot be written to a file");
+            }
+            if (f.fail())
+               std::runtime_error("tmva-sofie failed to write tensor data to file for  " + tensor_name);
         }
         long curr_pos = f.tellp();
         f.close();
@@ -810,7 +865,7 @@ long RModel::WriteInitializedTensorsToFile(std::string filename) {
 void RModel::PrintRequiredInputTensors() {
     std::cout << "Model requires following inputs:\n";
     for (auto& inputInfo: fInputTensorInfos) {
-        std::cout << "Parameterised Tensor name: " << inputInfo.first << "\t";
+        std::cout << "Parametraised Tensor name: " << inputInfo.first << "\t";
         std::cout << "type: " << ConvertTypeToString(inputInfo.second.type) << "\t";
         std::cout << "shape: [";
         for (size_t i = 0; i < inputInfo.second.shape.size(); i++) {
@@ -847,7 +902,10 @@ void RModel::PrintInitializedTensors() {
             std::cout << it.second.shape()[i];
             if (i < it.second.shape().size() - 1) std::cout << ",";
         }
-        std::cout << "]" << std::endl;
+        std::cout << "]";
+        if (it.second.IsConstantTensor()) std::cout << " (Constant)";
+        else if (!it.second.IsWeightTensor()) std::cout << " (Not Writable)";
+        std::cout << std::endl;
     }
     std::cout << "\n";
 }

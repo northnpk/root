@@ -60,6 +60,9 @@ public:
    }
    void AddInitializedTensor(std::string tensor_name, ETensorType type, std::vector<std::size_t> shape,
                              std::shared_ptr<void> data);
+   void AddConstantTensor(std::string tensor_name, ETensorType type, std::vector<std::size_t> shape,
+                             std::shared_ptr<void> data);
+
 
    template <typename T>
    void AddInitializedTensor(std::string tensor_name, ETensorType type, std::vector<std::size_t> shape, T *raw_data)
@@ -72,6 +75,10 @@ public:
       std::memcpy(data.get(), raw_data, size * sizeof(T));
       AddInitializedTensor(tensor_name, type, shape, data);
    }
+
+   // set a flag to indicate tensor does not need to be written in a weight file
+   // (e.g. shape tensors used as input to define a shape (in Reshape))
+   void SetNotWritableInitializedTensor(const std::string & tensor_name);
 
    // Check if a tensor is initialized
    bool IsInitializedTensor(const std::string &name) const;
@@ -97,10 +104,10 @@ public:
    void GenerateIntermediateTensorInfo();
    void GenerateDynamicTensorInfo();
    void GenerateOutput();
-   void Generate(std::underlying_type_t<Options> options, int batchSize = -1, long pos = 0);
-   void Generate(Options options = Options::kDefault, int batchSize = -1, int pos = 0)
+   void Generate(std::underlying_type_t<Options> options, int batchSize = -1, long pos = 0, bool verbose = false);
+   void Generate(Options options = Options::kDefault, int batchSize = -1, int pos = 0, bool verbose = false)
    {
-      Generate(static_cast<std::underlying_type_t<Options>>(options), batchSize, pos);
+      Generate(static_cast<std::underlying_type_t<Options>>(options), batchSize, pos, verbose);
    }
 
    const std::vector<std::string> &GetInputTensorNames() const { return fInputTensorNames; }

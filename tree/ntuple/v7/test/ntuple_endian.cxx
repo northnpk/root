@@ -65,6 +65,7 @@ public:
    RPageSinkMock(const RColumnElementBase &elt)
       : RPageSink("test", ROOT::Experimental::RNTupleWriteOptions()), fElement(elt)
    {
+      fOptions->SetEnablePageChecksums(false);
       fCompressor = std::make_unique<ROOT::Experimental::Internal::RNTupleCompressor>();
    }
    void CommitPage(ColumnHandle_t /*columnHandle*/, const RPage &page) final
@@ -83,18 +84,19 @@ protected:
    const RColumnElementBase &fElement;
    const std::vector<RPageStorage::RSealedPage> &fPages;
 
+   void LoadStructureImpl() final {}
    RNTupleDescriptor AttachImpl() final { return RNTupleDescriptor(); }
+   std::unique_ptr<RPageSource> CloneImpl() const final { return nullptr; }
 
 public:
    RPageSourceMock(const std::vector<RPageStorage::RSealedPage> &pages, const RColumnElementBase &elt)
       : RPageSource("test", ROOT::Experimental::RNTupleReadOptions()), fElement(elt), fPages(pages)
    {
    }
-   std::unique_ptr<RPageSource> Clone() const final { return nullptr; }
 
    RPage PopulatePage(ColumnHandle_t columnHandle, NTupleSize_t i) final
    {
-      return RPageSource::UnsealPage(fPages[i], fElement, columnHandle.fPhysicalId);
+      return RPageSource::UnsealPage(fPages[i], fElement, columnHandle.fPhysicalId).Unwrap();
    }
    RPage PopulatePage(ColumnHandle_t, ROOT::Experimental::RClusterIndex) final { return RPage(); }
    void ReleasePage(RPage &) final {}
@@ -118,8 +120,8 @@ TEST(RColumnElementEndian, ByteCopy)
    page1.GrowUnchecked(4);
    sink1.CommitPage(RPageStorage::ColumnHandle_t{}, page1);
 
-   EXPECT_EQ(
-      0, memcmp(sink1.GetPages()[0].fBuffer, "\x03\x02\x01\x00\x07\x06\x05\x04\x0b\x0a\x09\x08\x0f\x0e\x0d\x0c", 16));
+   EXPECT_EQ(0, memcmp(sink1.GetPages()[0].GetBuffer(),
+                       "\x03\x02\x01\x00\x07\x06\x05\x04\x0b\x0a\x09\x08\x0f\x0e\x0d\x0c", 16));
 
    RPageSourceMock source1(sink1.GetPages(), element);
    auto page2 = source1.PopulatePage(RPageStorage::ColumnHandle_t{}, NTupleSize_t{0});
@@ -144,8 +146,8 @@ TEST(RColumnElementEndian, Cast)
    page1.GrowUnchecked(4);
    sink1.CommitPage(RPageStorage::ColumnHandle_t{}, page1);
 
-   EXPECT_EQ(
-      0, memcmp(sink1.GetPages()[0].fBuffer, "\x03\x02\x01\x00\x07\x06\x05\x04\x0b\x0a\x09\x08\x0f\x0e\x0d\x0c", 16));
+   EXPECT_EQ(0, memcmp(sink1.GetPages()[0].GetBuffer(),
+                       "\x03\x02\x01\x00\x07\x06\x05\x04\x0b\x0a\x09\x08\x0f\x0e\x0d\x0c", 16));
 
    RPageSourceMock source1(sink1.GetPages(), element);
    auto page2 = source1.PopulatePage(RPageStorage::ColumnHandle_t{}, NTupleSize_t{0});
@@ -171,8 +173,8 @@ TEST(RColumnElementEndian, Split)
    page1.GrowUnchecked(2);
    sink1.CommitPage(RPageStorage::ColumnHandle_t{}, page1);
 
-   EXPECT_EQ(
-      0, memcmp(sink1.GetPages()[0].fBuffer, "\x07\x0f\x06\x0e\x05\x0d\x04\x0c\x03\x0b\x02\x0a\x01\x09\x00\x08", 16));
+   EXPECT_EQ(0, memcmp(sink1.GetPages()[0].GetBuffer(),
+                       "\x07\x0f\x06\x0e\x05\x0d\x04\x0c\x03\x0b\x02\x0a\x01\x09\x00\x08", 16));
 
    RPageSourceMock source1(sink1.GetPages(), splitElement);
    auto page2 = source1.PopulatePage(RPageStorage::ColumnHandle_t{}, NTupleSize_t{0});
@@ -199,8 +201,8 @@ TEST(RColumnElementEndian, DeltaSplit)
    page1.GrowUnchecked(4);
    sink1.CommitPage(RPageStorage::ColumnHandle_t{}, page1);
 
-   EXPECT_EQ(
-      0, memcmp(sink1.GetPages()[0].fBuffer, "\x03\x04\x04\x04\x02\x04\x04\x04\x01\x04\x04\x04\x00\x04\x04\x04", 16));
+   EXPECT_EQ(0, memcmp(sink1.GetPages()[0].GetBuffer(),
+                       "\x03\x04\x04\x04\x02\x04\x04\x04\x01\x04\x04\x04\x00\x04\x04\x04", 16));
 
    RPageSourceMock source1(sink1.GetPages(), element);
    auto page2 = source1.PopulatePage(RPageStorage::ColumnHandle_t{}, NTupleSize_t{0});
