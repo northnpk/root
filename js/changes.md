@@ -5,13 +5,20 @@
 2. Support gStyle.fLegendFillStyle
 3. Let change histogram min/max values via context menu
 4. Support Z-scale zooming with TScatter
-5. TProfile and TProfile2D projections https://github.com/root-project/root/issues/15851
-6. Draw total histogram from TEfficiency when draw option starts with 'b'
-7. Let redraw TEfficiency, THStack and TMultiGraph with different draw options via hist context menu
-8. Support 'pads' draw options for TMultiGraph, support context menu for it
-9. Internals - do not select pad (aka gPad) for objects drawing, always use assigned pad painter
-10. Fix - properly save zoomed ranges in drawingJSON()
-11. Fix - properly redraw TMultuGraph
+5. Implement "haxis" draw option for histogram to draw only axes for hbar
+6. Implement "axisg" and "haxisg" to draw axes with grids
+7. Support TH1 marker, text and line drawing superimposed with "haxis"
+8. Support TBox and TLatex drawing on "frame", support drawing on swapped axes
+9. TProfile and TProfile2D projections https://github.com/root-project/root/issues/15851
+10. Draw total histogram from TEfficiency when draw option starts with 'b'
+11. Let redraw TEfficiency, THStack and TMultiGraph with different draw options via hist context menu
+12. Support 'pads' draw options for TMultiGraph, support context menu for it
+13. Let drop object on sub-pads
+14. Properly loads ES6 modules for web canvas
+15. Internals - do not select pad (aka gPad) for objects drawing, always use assigned pad painter
+16. Fix - properly save zoomed ranges in drawingJSON()
+17. Fix - properly redraw TMultuGraph
+18. Fix - show empty bin in TProfile2D if it has entries #316
 
 
 ## Changes in 7.7.2

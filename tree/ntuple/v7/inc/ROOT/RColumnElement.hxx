@@ -16,7 +16,6 @@
 #ifndef ROOT7_RColumnElement
 #define ROOT7_RColumnElement
 
-#include <ROOT/RColumnModel.hxx>
 #include <ROOT/RConfig.hxx>
 #include <ROOT/RError.hxx>
 #include <ROOT/RFloat16.hxx>
@@ -283,8 +282,11 @@ public:
    /// If CppT == void, use the default C++ type for the given column type
    template <typename CppT = void>
    static std::unique_ptr<RColumnElementBase> Generate(EColumnType type);
-   static std::size_t GetBitsOnStorage(EColumnType type);
    static std::string GetTypeName(EColumnType type);
+   /// Most types have a fixed on-disk bit width. Some low-precision column types
+   /// have a range of possible bit widths. Return the minimum and maximum allowed
+   /// bit size per type.
+   static std::pair<std::uint16_t, std::uint16_t> GetValidBitRange(EColumnType type);
 
    /// Derived, typed classes tell whether the on-storage layout is bitwise identical to the memory layout
    virtual bool IsMappable() const

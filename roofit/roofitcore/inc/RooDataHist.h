@@ -213,7 +213,7 @@ public:
 
   std::string calculateTreeIndexForCodeSquash(RooAbsArg const *klass, RooFit::Detail::CodeSquashContext &ctx,
                                               const RooAbsCollection &coords, bool reverse = false) const;
-  std::string declWeightArrayForCodeSquash(RooAbsArg const *klass, RooFit::Detail::CodeSquashContext &ctx,
+  std::string declWeightArrayForCodeSquash(RooFit::Detail::CodeSquashContext &ctx,
                                            bool correctForBinSize) const;
 
   protected:

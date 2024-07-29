@@ -14,15 +14,20 @@
  *************************************************************************/
 
 #include <ROOT/RColumn.hxx>
-#include <ROOT/RColumnModel.hxx>
 #include <ROOT/RNTupleDescriptor.hxx>
 #include <ROOT/RPageStorage.hxx>
 
 #include <TError.h>
 
-ROOT::Experimental::Internal::RColumn::RColumn(const RColumnModel &model, std::uint32_t index)
-   : fModel(model), fIndex(index)
+#include <cassert>
+
+ROOT::Experimental::Internal::RColumn::RColumn(EColumnType type, std::uint32_t index)
+   : fType(type), fIndex(index), fRepresentationIndex(0 /* TODO(jblomer) */)
 {
+   // TODO(jblomer): fix for column types with configurable bit length once available
+   const auto [minBits, maxBits] = RColumnElementBase::GetValidBitRange(type);
+   assert(minBits == maxBits);
+   fBitsOnStorage = minBits;
 }
 
 ROOT::Experimental::Internal::RColumn::~RColumn()

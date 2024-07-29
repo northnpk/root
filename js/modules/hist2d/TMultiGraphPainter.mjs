@@ -1,6 +1,5 @@
 import { create, createHistogram, clTH1I, clTH2I, clTObjString, clTHashList, kNoZoom, kNoStats, BIT } from '../core.mjs';
-import { DrawOptions } from '../base/BasePainter.mjs';
-import { ObjectPainter } from '../base/ObjectPainter.mjs';
+import { ObjectPainter, DrawOptions } from '../base/ObjectPainter.mjs';
 import { FunctionsHandler } from './THistPainter.mjs';
 import { TH1Painter, PadDrawOptions } from './TH1Painter.mjs';
 import { TGraphPainter } from './TGraphPainter.mjs';
@@ -100,7 +99,7 @@ class TMultiGraphPainter extends ObjectPainter {
          // rw.first = false;
       }
 
-      // ignore existing histo in 3d case
+      // ignore existing histogram in 3d case
       if (this._3d && histo && !histo.fXaxis.fLabels)
          histo = null;
 
@@ -229,7 +228,7 @@ class TMultiGraphPainter extends ObjectPainter {
       return histo;
    }
 
-   /** @summary draw speical histogram for axis
+   /** @summary draw special histogram for axis
      * @return {Promise} when ready */
    async drawAxisHist(histo, hopt) {
       return TH1Painter.draw(this.getDrawDom(), histo, hopt);

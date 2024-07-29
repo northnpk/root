@@ -49,9 +49,17 @@ void ROOT::Experimental::Internal::RPageSourceFriends::AddVirtualField(const RNT
    for (const auto &f : originDesc.GetFieldIterable(originField))
       AddVirtualField(originDesc, originIdx, f, virtualFieldId, f.GetFieldName());
 
-   for (const auto &c: originDesc.GetColumnIterable(originField)) {
+   for (const auto &c : originDesc.GetColumnIterable(originField)) {
       auto physicalId = c.IsAliasColumn() ? fIdBiMap.GetVirtualId({originIdx, c.GetPhysicalId()}) : fNextId;
-      fBuilder.AddColumn(fNextId, physicalId, virtualFieldId, c.GetModel(), c.GetIndex());
+      RColumnDescriptorBuilder columnBuilder;
+      columnBuilder.LogicalColumnId(fNextId)
+         .PhysicalColumnId(physicalId)
+         .FieldId(virtualFieldId)
+         .BitsOnStorage(c.GetBitsOnStorage())
+         .Type(c.GetType())
+         .Index(c.GetIndex())
+         .RepresentationIndex(c.GetRepresentationIndex());
+      fBuilder.AddColumn(columnBuilder.MakeDescriptor().Unwrap()).ThrowOnError();
       fIdBiMap.Insert({originIdx, c.GetLogicalId()}, fNextId);
       fNextId++;
    }
@@ -95,14 +103,14 @@ ROOT::Experimental::RNTupleDescriptor ROOT::Experimental::Internal::RPageSourceF
       for (const auto &c : descriptorGuard->GetClusterIterable()) {
          RClusterDescriptorBuilder clusterBuilder;
          clusterBuilder.ClusterId(fNextId).FirstEntryIndex(c.GetFirstEntryIndex()).NEntries(c.GetNEntries());
-         for (auto originColumnId : c.GetColumnIds()) {
-            DescriptorId_t virtualColumnId = fIdBiMap.GetVirtualId({i, originColumnId});
+         for (const auto &originColumnRange : c.GetColumnRangeIterable()) {
+            DescriptorId_t virtualColumnId = fIdBiMap.GetVirtualId({i, originColumnRange.fPhysicalColumnId});
 
-            auto pageRange = c.GetPageRange(originColumnId).Clone();
+            auto pageRange = c.GetPageRange(originColumnRange.fPhysicalColumnId).Clone();
             pageRange.fPhysicalColumnId = virtualColumnId;
 
-            auto firstElementIndex = c.GetColumnRange(originColumnId).fFirstElementIndex;
-            auto compressionSettings = c.GetColumnRange(originColumnId).fCompressionSettings;
+            auto firstElementIndex = originColumnRange.fFirstElementIndex;
+            auto compressionSettings = originColumnRange.fCompressionSettings;
 
             clusterBuilder.CommitColumnRange(virtualColumnId, firstElementIndex, compressionSettings, pageRange);
          }
@@ -164,9 +172,7 @@ ROOT::Experimental::Internal::RPageSourceFriends::PopulatePage(ColumnHandle_t co
 {
    auto virtualColumnId = columnHandle.fPhysicalId;
    auto originColumnId = fIdBiMap.GetOriginId(virtualColumnId);
-   RClusterIndex originClusterIndex(
-      fIdBiMap.GetOriginId(clusterIndex.GetClusterId()).fId,
-      clusterIndex.GetIndex());
+   RClusterIndex originClusterIndex(fIdBiMap.GetOriginId(clusterIndex.GetClusterId()).fId, clusterIndex.GetIndex());
    columnHandle.fPhysicalId = originColumnId.fId;
 
    auto page = fSources[originColumnId.fSourceIdx]->PopulatePage(columnHandle, originClusterIndex);
@@ -180,9 +186,7 @@ void ROOT::Experimental::Internal::RPageSourceFriends::LoadSealedPage(Descriptor
                                                                       RSealedPage &sealedPage)
 {
    auto originColumnId = fIdBiMap.GetOriginId(physicalColumnId);
-   RClusterIndex originClusterIndex(
-      fIdBiMap.GetOriginId(clusterIndex.GetClusterId()).fId,
-      clusterIndex.GetIndex());
+   RClusterIndex originClusterIndex(fIdBiMap.GetOriginId(clusterIndex.GetClusterId()).fId, clusterIndex.GetIndex());
 
    fSources[originColumnId.fSourceIdx]->LoadSealedPage(physicalColumnId, originClusterIndex, sealedPage);
 }

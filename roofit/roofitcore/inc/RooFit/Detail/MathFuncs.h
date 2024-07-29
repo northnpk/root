@@ -90,6 +90,15 @@ inline double gaussian(double x, double mean, double sigma)
    return std::exp(-0.5 * arg * arg / (sig * sig));
 }
 
+inline double product(double const *factors, std::size_t nFactors)
+{
+   double out = 1.0;
+   for (std::size_t i = 0; i < nFactors; ++i) {
+      out *= factors[i];
+   }
+   return out;
+}
+
 // RooRatio evaluate function.
 inline double ratio(double numerator, double denominator)
 {
@@ -164,6 +173,26 @@ inline unsigned int getUniformBinning(double low, double high, double val, unsig
 {
    double binWidth = (high - low) / numBins;
    return val >= high ? numBins - 1 : std::abs((val - low) / binWidth);
+}
+
+inline double interpolate1d(double low, double high, double val, unsigned int numBins, double const* vals)
+{
+   double binWidth = (high - low) / numBins;
+   int idx = val >= high ? numBins - 1 : std::abs((val - low) / binWidth);
+
+   // interpolation
+   double central = low + (idx + 0.5) * binWidth;
+   if (val > low + 0.5 * binWidth && val < high - 0.5 * binWidth) {
+      double slope;
+      if (val < central) {
+          slope = vals[idx] - vals[idx - 1];
+      } else {
+          slope = vals[idx + 1] - vals[idx];
+      }
+      return vals[idx] + slope * (val - central) / binWidth;
+   }
+
+   return vals[idx];
 }
 
 inline double poisson(double x, double par)
@@ -285,8 +314,8 @@ inline double flexibleInterpSingle(unsigned int code, double low, double high, d
    return 0.0;
 }
 
-inline double flexibleInterp(unsigned int code, double *params, unsigned int n, double *low, double *high,
-                             double boundary, double nominal, int doCutoff)
+inline double flexibleInterp(unsigned int code, double const *params, unsigned int n, double const *low,
+                             double const *high, double boundary, double nominal, int doCutoff)
 {
    double total = nominal;
    for (std::size_t i = 0; i < n; ++i) {

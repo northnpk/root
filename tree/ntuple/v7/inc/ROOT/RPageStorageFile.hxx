@@ -58,6 +58,17 @@ The written file can be either in ROOT format or in RNTuple bare format.
 // clang-format on
 class RPageSinkFile : public RPagePersistentSink {
 private:
+   // A set of pages to be committed together in a vector write.
+   // Currently we assume they're all sequential (although they may span multiple ranges).
+   struct CommitBatch {
+      /// The list of pages to commit
+      std::vector<const RSealedPage *> fSealedPages;
+      /// Total size in bytes of the batch
+      size_t fSize;
+      /// Total uncompressed size of the elements in the page batch
+      size_t fBytesPacked;
+   };
+
    std::unique_ptr<RPageAllocatorHeap> fPageAllocator;
 
    std::unique_ptr<RNTupleFileWriter> fWriter;
@@ -69,13 +80,20 @@ private:
    /// key. It is not strictly necessary to write and read the sealed page.
    RNTupleLocator WriteSealedPage(const RPageStorage::RSealedPage &sealedPage, std::size_t bytesPacked);
 
+   /// Subroutine of CommitSealedPageVImpl, used to perform a vector write of the (multi-)range of pages
+   /// contained in `batch`. The locators for the written pages are appended to `locators`.
+   /// This procedure also updates some internal metrics of the page sink, hence it's not const.
+   /// `batch` gets reset to size 0 after the writing is done (but its begin and end are not updated).
+   void CommitBatchOfPages(CommitBatch &batch, std::vector<RNTupleLocator> &locators);
+
 protected:
    using RPagePersistentSink::InitImpl;
    void InitImpl(unsigned char *serializedHeader, std::uint32_t length) final;
    RNTupleLocator CommitPageImpl(ColumnHandle_t columnHandle, const RPage &page) final;
    RNTupleLocator
    CommitSealedPageImpl(DescriptorId_t physicalColumnId, const RPageStorage::RSealedPage &sealedPage) final;
-   std::vector<RNTupleLocator> CommitSealedPageVImpl(std::span<RPageStorage::RSealedPageGroup> ranges) final;
+   std::vector<RNTupleLocator>
+   CommitSealedPageVImpl(std::span<RPageStorage::RSealedPageGroup> ranges, const std::vector<bool> &mask) final;
    std::uint64_t CommitClusterImpl() final;
    RNTupleLocator CommitClusterGroupImpl(unsigned char *serializedPageList, std::uint32_t length) final;
    using RPagePersistentSink::CommitDatasetImpl;

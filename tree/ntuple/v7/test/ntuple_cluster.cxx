@@ -4,7 +4,6 @@
 #include <ROOT/RCluster.hxx>
 #include <ROOT/RClusterPool.hxx>
 #include <ROOT/RColumn.hxx>
-#include <ROOT/RColumnModel.hxx>
 #include <ROOT/RNTupleDescriptor.hxx>
 #include <ROOT/RNTupleModel.hxx>
 #include <ROOT/RNTupleReader.hxx>
@@ -52,6 +51,7 @@ public:
    RPageSourceMock() : RPageSource("test", ROOT::Experimental::RNTupleReadOptions())
    {
       ROOT::Experimental::Internal::RNTupleDescriptorBuilder descBuilder;
+      descBuilder.SetNTuple("ntpl", "");
       for (unsigned i = 0; i <= 5; ++i) {
          descBuilder.AddCluster(ROOT::Experimental::Internal::RClusterDescriptorBuilder()
                                    .ClusterId(i)
@@ -338,7 +338,7 @@ TEST(PageStorageFile, LoadClusters)
       auto descriptorGuard = source.GetSharedDescriptorGuard();
       ptId = descriptorGuard->FindFieldId("pt");
       EXPECT_NE(ROOT::Experimental::kInvalidDescriptorId, ptId);
-      colId = descriptorGuard->FindPhysicalColumnId(ptId, 0);
+      colId = descriptorGuard->FindPhysicalColumnId(ptId, 0, 0);
       EXPECT_NE(ROOT::Experimental::kInvalidDescriptorId, colId);
    }
 
@@ -348,8 +348,7 @@ TEST(PageStorageFile, LoadClusters)
    EXPECT_EQ(0U, cluster->GetId());
    EXPECT_EQ(0U, cluster->GetNOnDiskPages());
 
-   auto column = ROOT::Experimental::Internal::RColumn::Create<float>(
-      ROOT::Experimental::RColumnModel(ROOT::Experimental::EColumnType::kReal32, false), 0);
+   auto column = ROOT::Experimental::Internal::RColumn::Create<float>(ROOT::Experimental::EColumnType::kReal32, 0);
    column->ConnectPageSource(ptId, source);
    clusterKeys[0].fClusterId = 1;
    clusterKeys[0].fPhysicalColumnSet.insert(colId);

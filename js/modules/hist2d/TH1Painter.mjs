@@ -63,7 +63,7 @@ class TH1Painter extends THistPainter {
 
       const left = this.getSelectIndex('x', 'left'),
             right = this.getSelectIndex('x', 'right'),
-            pad_logy = this.getPadPainter()?.getPadLog(this.options.BarStyle >= 20 ? 'x' : 'y'),
+            pad_logy = this.getPadPainter()?.getPadLog(this.options.swap_xy() ? 'x' : 'y'),
             f1 = this.options.Func ? this.findFunction(clTF1) : null;
 
       if (when_axis_changed && (left === this.scan_xleft) && (right === this.scan_xright))
@@ -175,7 +175,7 @@ class TH1Painter extends THistPainter {
             hmin = hmax = kNoZoom;
       } else if ((hmin !== kNoZoom) && (hmax !== kNoZoom) && !this.draw_content &&
           ((this.ymin === this.ymax) || (this.ymin > hmin) || (this.ymax < hmax))) {
-         // offten appears with TF1 painter where Y range is not set properly
+         // often appears with TF1 painter where Y range is not set properly
          this.ymin = hmin;
          this.ymax = hmax;
          fix_min = fix_max = true;
@@ -389,6 +389,14 @@ class TH1Painter extends THistPainter {
       return true;
    }
 
+   /** @summary Get baseline for bar drawings */
+   getBarBaseline(funcs, height) {
+      let gry = funcs.swap_xy ? 0 : height;
+      if (Number.isFinite(this.options.BaseLine) && (this.options.BaseLine >= funcs.scale_ymin))
+         gry = Math.round(funcs.gry(this.options.BaseLine));
+      return gry;
+   }
+
    /** @summary Draw histogram as bars */
    async drawBars(funcs, height) {
       const left = this.getSelectIndex('x', 'left', -1),
@@ -396,16 +404,12 @@ class TH1Painter extends THistPainter {
             histo = this.getHisto(), xaxis = histo.fXaxis,
             show_text = this.options.Text;
       let text_col, text_angle, text_size,
-          i, x1, x2, grx1, grx2, y, gry1, gry2, w,
+          i, x1, x2, grx1, grx2, y, gry1, w,
           bars = '', barsl = '', barsr = '',
           side = (this.options.BarStyle > 10) ? this.options.BarStyle % 10 : 0;
 
       if (side > 4) side = 4;
-      gry2 = funcs.swap_xy ? 0 : height;
-      if (Number.isFinite(this.options.BaseLine)) {
-         if (this.options.BaseLine >= funcs.scale_ymin)
-            gry2 = Math.round(funcs.gry(this.options.BaseLine));
-       }
+      const gry2 = this.getBarBaseline(funcs, height);
 
       if (show_text) {
          text_col = this.getColor(histo.fMarkerColor);
@@ -640,23 +644,40 @@ class TH1Painter extends THistPainter {
             const he1 = Math.max(yerr1, 5), he2 = Math.max(yerr2, 5);
             hints_err += `M${midx-edx},${my-he1}h${2*edx}v${he1+he2}h${-2*edx}z`;
          }
+      }, draw_marker = () => {
+         if (funcs.swap_xy) {
+            path_marker += this.markeratt.create(my, midx);
+            if (hints_marker !== null)
+               hints_marker += `M${my-hsz},${midx-hsz}v${2*hsz}h${2*hsz}v${-2*hsz}z`;
+         } else {
+            path_marker += this.markeratt.create(midx, my);
+            if (hints_marker !== null)
+               hints_marker += `M${midx-hsz},${my-hsz}h${2*hsz}v${2*hsz}h${-2*hsz}z`;
+         }
       }, draw_bin = bin => {
          if (extract_bin(bin)) {
             if (show_text) {
                const cont = text_profile ? histo.fBinEntries[bin+1] : bincont;
 
                if (cont !== 0) {
-                  const lbl = (cont === Math.round(cont)) ? cont.toString() : floatToString(cont, gStyle.fPaintTextFormat);
-
-                  if (text_angle)
-                     this.drawText({ align: 12, x: midx, y: Math.round(my - 2 - text_size/5), width: 0, height: 0, rotate: text_angle, text: lbl, color: text_col, latex: 0 });
-                  else
-                     this.drawText({ align: 22, x: Math.round(mx1 + (mx2-mx1)*0.1), y: Math.round(my-2-text_size), width: Math.round((mx2-mx1)*0.8), height: text_size, text: lbl, color: text_col, latex: 0 });
+                  const arg = text_angle
+                     ? { align: 12, x: midx, y: Math.round(my - 2 - text_size / 5), width: 0, height: 0, rotate: text_angle }
+                     : { align: 22, x: Math.round(mx1 + (mx2 - mx1) * 0.1), y: Math.round(my - 2 - text_size), width: Math.round((mx2 - mx1) * 0.8), height: text_size };
+                  arg.text = (cont === Math.round(cont)) ? cont.toString() : floatToString(cont, gStyle.fPaintTextFormat);
+                  arg.color = text_col;
+                  arg.latex = 0;
+                  if (funcs.swap_xy) {
+                     arg.x = my;
+                     arg.y = Math.round(midx - text_size/2);
+                  }
+                  this.drawText(arg);
                }
             }
 
             if (show_line) {
-               if (path_line.length === 0)
+               if (funcs.swap_xy)
+                  path_line += (path_line ? 'L' : 'M') + `${my},${midx}`; // no optimization
+               else if (path_line.length === 0)
                   path_line = `M${midx},${my}`;
                else if (lx === midx)
                   path_line += `v${my-ly}`;
@@ -672,12 +693,8 @@ class TH1Painter extends THistPainter {
                if ((my >= -yerr1) && (my <= height + yerr2)) {
                   if (path_fill !== null)
                      path_fill += `M${mx1},${my-yerr1}h${mx2-mx1}v${yerr1+yerr2+1}h${mx1-mx2}z`;
-                  if ((path_marker !== null) && do_marker) {
-                     path_marker += this.markeratt.create(midx, my);
-                     if (hints_marker !== null)
-                        hints_marker += `M${midx-hsz},${my-hsz}h${2*hsz}v${2*hsz}h${-2*hsz}z`;
-                  }
-
+                  if ((path_marker !== null) && do_marker)
+                     draw_marker();
                   if ((path_err !== null) && do_err)
                      draw_errbin();
                }
@@ -691,9 +708,7 @@ class TH1Painter extends THistPainter {
             for (i = left; i < right; ++i) {
                if (extract_bin(i)) {
                   if (path_marker !== null)
-                     path_marker += this.markeratt.create(midx, my);
-                  if (hints_marker !== null)
-                     hints_marker += `M${midx-hsz},${my-hsz}h${2*hsz}v${2*hsz}h${-2*hsz}z`;
+                     draw_marker();
                   if (path_err !== null)
                      draw_errbin();
                }
@@ -701,7 +716,6 @@ class TH1Painter extends THistPainter {
             do_err = do_marker = false;
          }
       }
-
 
       for (i = left; i <= right; ++i) {
          x = xaxis.GetBinLowEdge(i+1);
@@ -808,8 +822,11 @@ class TH1Painter extends THistPainter {
       }
 
       if (draw_markers || show_line || show_curve) {
-         if (!path_line && grpnts.length)
+         if (!path_line && grpnts.length) {
+            if (funcs.swap_xy)
+               grpnts.forEach(pnt => { const d = pnt.grx; pnt.grx = pnt.gry; pnt.gry = d; });
             path_line = buildSvgCurve(grpnts);
+         }
 
          if (path_fill) {
             this.draw_g.append('svg:path')
@@ -822,23 +839,23 @@ class TH1Painter extends THistPainter {
          }
 
          if (path_err) {
-             this.draw_g.append('svg:path')
-                   .attr('d', path_err)
-                   .call(this.lineatt.func);
+            this.draw_g.append('svg:path')
+                .attr('d', path_err)
+                .call(this.lineatt.func);
          }
 
          if (hints_err) {
-               this.draw_g.append('svg:path')
-                   .attr('d', hints_err)
-                   .style('fill', 'none')
-                   .style('pointer-events', this.isBatchMode() ? null : 'visibleFill');
+            this.draw_g.append('svg:path')
+                .attr('d', hints_err)
+                .style('fill', 'none')
+                .style('pointer-events', this.isBatchMode() ? null : 'visibleFill');
          }
 
          if (path_line) {
             this.draw_g.append('svg:path')
-                   .attr('d', path_line)
-                   .style('fill', 'none')
-                   .call(this.lineatt.func);
+                .attr('d', path_line)
+                .style('fill', 'none')
+                .call(this.lineatt.func);
          }
 
          if (path_marker) {
@@ -1010,7 +1027,7 @@ class TH1Painter extends THistPainter {
 
          gapx = 0;
 
-         gry1 = Math.round(funcs.gry(((this.options.BaseLine !== false) && (this.options.BaseLine > funcs.scale_ymin)) ? this.options.BaseLine : funcs.scale_ymin));
+         gry1 = this.getBarBaseline(funcs, height);
 
          if (gry1 > gry2)
             [gry1, gry2] = [gry2, gry1];
@@ -1232,7 +1249,7 @@ class TH1Painter extends THistPainter {
       let min = histo.getBinContent(left + 1);
       for (let indx = left; indx < right; ++indx)
          min = Math.min(min, histo.getBinContent(indx+1));
-      if (min > 0) return; // if all points positive, no chance for autoscale
+      if (min > 0) return; // if all points positive, no chance for auto-scale
 
       while ((left < right) && (histo.getBinContent(left+1) <= min)) ++left;
       while ((left < right) && (histo.getBinContent(right) <= min)) --right;

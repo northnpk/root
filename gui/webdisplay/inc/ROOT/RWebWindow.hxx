@@ -15,6 +15,8 @@
 
 #include <ROOT/RWebDisplayHandle.hxx>
 
+#include "ROOT/RConfig.hxx"
+
 #include <memory>
 #include <vector>
 #include <string>
@@ -69,6 +71,7 @@ private:
    struct WebConn {
       unsigned fConnId{0};                 ///<! connection id (unique inside the window)
       bool fHeadlessMode{false};           ///<! indicate if connection represent batch job
+      bool fWasFirst{false};               ///<! indicate if this was first connection, will be reinjected also on first place
       std::string fKey;                    ///<! key value supplied to the window (when exists)
       int fKeyUsed{0};                     ///<! key value used to verify connection
       std::string fNewKey;                 ///<! new key if connection request reload
@@ -382,8 +385,10 @@ public:
 
    std::string GetAddr() const;
 
+   _R__DEPRECATED_LATER("Use GetUrl() to get valid connection URL")
    std::string GetRelativeAddr(const std::shared_ptr<RWebWindow> &win) const;
 
+   _R__DEPRECATED_LATER("Use GetAddr() to get valid connection URL")
    std::string GetRelativeAddr(const RWebWindow &win) const;
 
    void SetCallBacks(WebWindowConnectCallback_t conn, WebWindowDataCallback_t data, WebWindowConnectCallback_t disconn = nullptr);

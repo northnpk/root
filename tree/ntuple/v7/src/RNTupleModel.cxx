@@ -194,7 +194,7 @@ void ROOT::Experimental::RNTupleModel::RUpdater::AddField(std::unique_ptr<RField
 
 ROOT::Experimental::RResult<void>
 ROOT::Experimental::RNTupleModel::RUpdater::AddProjectedField(std::unique_ptr<RFieldBase> field,
-                                                              std::function<std::string(const std::string &)> mapping)
+                                                              FieldMappingFunc_t mapping)
 {
    auto fieldp = field.get();
    auto result = fOpenChangeset.fModel.AddProjectedField(std::move(field), mapping);
@@ -222,7 +222,7 @@ void ROOT::Experimental::RNTupleModel::EnsureNotFrozen() const
 
 void ROOT::Experimental::RNTupleModel::EnsureNotBare() const
 {
-   if (!fDefaultEntry)
+   if (IsBare())
       throw RException(R__FAIL("invalid attempt to use default entry of bare model"));
 }
 
@@ -309,8 +309,7 @@ void ROOT::Experimental::RNTupleModel::AddField(std::unique_ptr<RFieldBase> fiel
 }
 
 ROOT::Experimental::RResult<void>
-ROOT::Experimental::RNTupleModel::AddProjectedField(std::unique_ptr<RFieldBase> field,
-                                                    std::function<std::string(const std::string &)> mapping)
+ROOT::Experimental::RNTupleModel::AddProjectedField(std::unique_ptr<RFieldBase> field, FieldMappingFunc_t mapping)
 {
    EnsureNotFrozen();
    if (!field)
@@ -480,10 +479,12 @@ std::size_t ROOT::Experimental::RNTupleModel::EstimateWriteMemoryUsage(const RNT
    for (auto &&field : *fFieldZero) {
       nColumns += field.GetColumnRepresentative().size();
    }
-   bytes += nColumns * pageBufferPerColumn;
+   const std::size_t pageBuffersPerModel = nColumns * pageBufferPerColumn;
+   bytes += pageBuffersPerModel;
 
-   // If using buffered writing with RPageSinkBuf, we keep at least the compressed pages in memory.
+   // If using buffered writing with RPageSinkBuf, we create a clone of the model and keep at least the compressed pages in memory.
    if (options.GetUseBufferedWrite()) {
+      bytes += pageBuffersPerModel;
       // Use the target cluster size as an estimate for all compressed pages combined.
       bytes += options.GetApproxZippedClusterSize();
       int compression = options.GetCompression();

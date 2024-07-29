@@ -18,7 +18,6 @@
 
 #include <ROOT/RConfig.hxx> // for R__likely
 #include <ROOT/RColumnElement.hxx>
-#include <ROOT/RColumnModel.hxx>
 #include <ROOT/RNTupleUtil.hxx>
 #include <ROOT/RPage.hxx>
 #include <ROOT/RPageStorage.hxx>
@@ -42,12 +41,13 @@ namespace Internal {
 // clang-format on
 class RColumn {
 private:
-   RColumnModel fModel;
-   /**
-    * Columns belonging to the same field are distinguished by their order.  E.g. for an std::string field, there is
-    * the offset column with index 0 and the character value column with index 1.
-    */
+   EColumnType fType;
+   std::uint16_t fBitsOnStorage = 0;
+   /// Columns belonging to the same field are distinguished by their order.  E.g. for an std::string field, there is
+   /// the offset column with index 0 and the character value column with index 1.
    std::uint32_t fIndex;
+   /// Fields can have multiple column representations, distinguished by representation index
+   std::uint16_t fRepresentationIndex;
    RPageSink *fPageSink = nullptr;
    RPageSource *fPageSource = nullptr;
    RPageStorage::ColumnHandle_t fHandleSink;
@@ -76,7 +76,7 @@ private:
    /// Used to pack and unpack pages on writing/reading
    std::unique_ptr<RColumnElementBase> fElement;
 
-   RColumn(const RColumnModel &model, std::uint32_t index);
+   RColumn(EColumnType type, std::uint32_t index);
 
    /// Used in Append() and AppendV() to handle the case when the main page reached the target size.
    /// If tail page optimization is enabled, switch the pages; the other page has been flushed when
@@ -112,10 +112,10 @@ private:
 
 public:
    template <typename CppT>
-   static std::unique_ptr<RColumn> Create(const RColumnModel &model, std::uint32_t index)
+   static std::unique_ptr<RColumn> Create(EColumnType type, std::uint32_t index)
    {
-      auto column = std::unique_ptr<RColumn>(new RColumn(model, index));
-      column->fElement = RColumnElementBase::Generate<CppT>(model.GetType());
+      auto column = std::unique_ptr<RColumn>(new RColumn(type, index));
+      column->fElement = RColumnElementBase::Generate<CppT>(type);
       return column;
    }
 
@@ -334,8 +334,10 @@ public:
    void MapPage(RClusterIndex clusterIndex);
    NTupleSize_t GetNElements() const { return fNElements; }
    RColumnElementBase *GetElement() const { return fElement.get(); }
-   const RColumnModel &GetModel() const { return fModel; }
+   EColumnType GetType() const { return fType; }
+   std::uint16_t GetBitsOnStorage() const { return fBitsOnStorage; }
    std::uint32_t GetIndex() const { return fIndex; }
+   std::uint16_t GetRepresentationIndex() const { return fRepresentationIndex; }
    ColumnId_t GetColumnIdSource() const { return fColumnIdSource; }
    NTupleSize_t GetFirstElementIndex() const { return fFirstElementIndex; }
    RPageSource *GetPageSource() const { return fPageSource; }

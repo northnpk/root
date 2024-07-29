@@ -24,6 +24,7 @@
 #include <Rtypes.h>
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -65,13 +66,14 @@ public:
    static constexpr std::uint16_t kEnvelopeTypePageList = 0x03;
 
    static constexpr std::uint16_t kFlagRepetitiveField = 0x01;
+   static constexpr std::uint16_t kFlagProjectedField = 0x02;
+   static constexpr std::uint16_t kFlagHasTypeChecksum = 0x04;
 
-   static constexpr std::uint32_t kFlagSortAscColumn     = 0x01;
-   static constexpr std::uint32_t kFlagSortDesColumn     = 0x02;
-   static constexpr std::uint32_t kFlagNonNegativeColumn = 0x04;
-   static constexpr std::uint32_t kFlagDeferredColumn    = 0x08;
+   static constexpr std::uint16_t kFlagDeferredColumn = 0x08;
 
    static constexpr DescriptorId_t kZeroFieldId = std::uint64_t(-2);
+
+   static constexpr int64_t kSuppressedColumnMarker = std::numeric_limits<std::int64_t>::min();
 
    // In the page sink and the unsplit field, the seen streamer infos are stored in a map
    // with the unique streamer info number being the key.

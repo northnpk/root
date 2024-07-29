@@ -64,7 +64,7 @@ using ROOT::Experimental::RNTupleInspector;
 
 auto file = TFile::Open("data.rntuple");
 auto rntuple = file->Get<RNTuple>("NTupleName");
-auto inspector = RNTupleInspector::Create(rntuple).Unwrap();
+auto inspector = RNTupleInspector::Create(rntuple);
 
 std::cout << "The compression factor is " << inspector->GetCompressionFactor()
           << " using compression settings " << inspector->GetCompressionSettings()
@@ -101,12 +101,12 @@ public:
       std::uint64_t GetNPages() const { return fCompressedPageSizes.size(); }
       std::uint64_t GetCompressedSize() const
       {
-         return std::accumulate(fCompressedPageSizes.begin(), fCompressedPageSizes.end(), 0);
+         return std::accumulate(fCompressedPageSizes.begin(), fCompressedPageSizes.end(), static_cast<std::uint64_t>(0));
       }
       std::uint64_t GetUncompressedSize() const { return fElementSize * fNElements; }
       std::uint64_t GetElementSize() const { return fElementSize; }
       std::uint64_t GetNElements() const { return fNElements; }
-      EColumnType GetType() const { return fColumnDescriptor.GetModel().GetType(); }
+      EColumnType GetType() const { return fColumnDescriptor.GetType(); }
    };
 
    /////////////////////////////////////////////////////////////////////////////
@@ -187,7 +187,7 @@ public:
    /// \note When this factory method is called, all required static information is collected from the RNTuple's fields
    /// and underlying columns are collected at ones. This means that when any inconsistencies are encountered (e.g.
    /// inconsistent compression across clusters), it will throw an error here.
-   static std::unique_ptr<RNTupleInspector> Create(RNTuple *sourceNTuple);
+   static std::unique_ptr<RNTupleInspector> Create(const RNTuple &sourceNTuple);
 
    /////////////////////////////////////////////////////////////////////////////
    /// \brief Create a new RNTupleInspector.
