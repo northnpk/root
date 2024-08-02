@@ -62,8 +62,7 @@ ROOT::Experimental::Internal::RPageSinkFile::RPageSinkFile(std::string_view ntup
                                                            const RNTupleWriteOptions &options)
    : RPageSinkFile(ntupleName, options)
 {
-   fWriter = RNTupleFileWriter::Recreate(ntupleName, path, options.GetCompression(),
-                                         RNTupleFileWriter::EContainerFormat::kTFile, options.GetMaxKeySize());
+   fWriter = RNTupleFileWriter::Recreate(ntupleName, path, RNTupleFileWriter::EContainerFormat::kTFile, options);
 }
 
 ROOT::Experimental::Internal::RPageSinkFile::RPageSinkFile(std::string_view ntupleName, TFile &file,
@@ -435,9 +434,9 @@ void ROOT::Experimental::Internal::RPageSourceFile::LoadSealedPage(DescriptorId_
 }
 
 ROOT::Experimental::Internal::RPage
-ROOT::Experimental::Internal::RPageSourceFile::PopulatePageFromCluster(ColumnHandle_t columnHandle,
-                                                                       const RClusterInfo &clusterInfo,
-                                                                       ClusterSize_t::ValueType idxInCluster)
+ROOT::Experimental::Internal::RPageSourceFile::LoadPageImpl(ColumnHandle_t columnHandle,
+                                                            const RClusterInfo &clusterInfo,
+                                                            ClusterSize_t::ValueType idxInCluster)
 {
    const auto columnId = columnHandle.fPhysicalId;
    const auto clusterId = clusterInfo.fClusterId;
@@ -465,7 +464,7 @@ ROOT::Experimental::Internal::RPageSourceFile::PopulatePageFromCluster(ColumnHan
       directReadBuffer = std::unique_ptr<unsigned char[]>(new unsigned char[sealedPage.GetBufferSize()]);
       fReader.ReadBuffer(directReadBuffer.get(), sealedPage.GetBufferSize(),
                          pageInfo.fLocator.GetPosition<std::uint64_t>());
-      fCounters->fNPageLoaded.Inc();
+      fCounters->fNPageRead.Inc();
       fCounters->fNRead.Inc();
       fCounters->fSzReadPayload.Add(sealedPage.GetBufferSize());
       sealedPage.SetBuffer(directReadBuffer.get());
@@ -495,60 +494,8 @@ ROOT::Experimental::Internal::RPageSourceFile::PopulatePageFromCluster(ColumnHan
                      RPage::RClusterInfo(clusterId, clusterInfo.fColumnOffset));
    fPagePool->RegisterPage(
       newPage, RPageDeleter([](const RPage &page, void *) { RPageAllocatorHeap::DeletePage(page); }, nullptr));
-   fCounters->fNPagePopulated.Inc();
+   fCounters->fNPageUnsealed.Inc();
    return newPage;
-}
-
-ROOT::Experimental::Internal::RPage
-ROOT::Experimental::Internal::RPageSourceFile::PopulatePage(ColumnHandle_t columnHandle, NTupleSize_t globalIndex)
-{
-   const auto columnId = columnHandle.fPhysicalId;
-   auto cachedPage = fPagePool->GetPage(columnId, globalIndex);
-   if (!cachedPage.IsNull())
-      return cachedPage;
-
-   std::uint64_t idxInCluster;
-   RClusterInfo clusterInfo;
-   {
-      auto descriptorGuard = GetSharedDescriptorGuard();
-      clusterInfo.fClusterId = descriptorGuard->FindClusterId(columnId, globalIndex);
-
-      if (clusterInfo.fClusterId == kInvalidDescriptorId)
-         throw RException(R__FAIL("entry with index " + std::to_string(globalIndex) + " out of bounds"));
-
-      const auto &clusterDescriptor = descriptorGuard->GetClusterDescriptor(clusterInfo.fClusterId);
-      clusterInfo.fColumnOffset = clusterDescriptor.GetColumnRange(columnId).fFirstElementIndex;
-      R__ASSERT(clusterInfo.fColumnOffset <= globalIndex);
-      idxInCluster = globalIndex - clusterInfo.fColumnOffset;
-      clusterInfo.fPageInfo = clusterDescriptor.GetPageRange(columnId).Find(idxInCluster);
-   }
-
-   return PopulatePageFromCluster(columnHandle, clusterInfo, idxInCluster);
-}
-
-ROOT::Experimental::Internal::RPage
-ROOT::Experimental::Internal::RPageSourceFile::PopulatePage(ColumnHandle_t columnHandle, RClusterIndex clusterIndex)
-{
-   const auto clusterId = clusterIndex.GetClusterId();
-   const auto idxInCluster = clusterIndex.GetIndex();
-   const auto columnId = columnHandle.fPhysicalId;
-   auto cachedPage = fPagePool->GetPage(columnId, clusterIndex);
-   if (!cachedPage.IsNull())
-      return cachedPage;
-
-   if (clusterId == kInvalidDescriptorId)
-      throw RException(R__FAIL("entry out of bounds"));
-
-   RClusterInfo clusterInfo;
-   {
-      auto descriptorGuard = GetSharedDescriptorGuard();
-      const auto &clusterDescriptor = descriptorGuard->GetClusterDescriptor(clusterId);
-      clusterInfo.fClusterId = clusterId;
-      clusterInfo.fColumnOffset = clusterDescriptor.GetColumnRange(columnId).fFirstElementIndex;
-      clusterInfo.fPageInfo = clusterDescriptor.GetPageRange(columnId).Find(idxInCluster);
-   }
-
-   return PopulatePageFromCluster(columnHandle, clusterInfo, idxInCluster);
 }
 
 void ROOT::Experimental::Internal::RPageSourceFile::ReleasePage(RPage &page)
@@ -635,6 +582,7 @@ ROOT::Experimental::Internal::RPageSourceFile::PrepareSingleCluster(
    ROOT::Internal::RRawFile::RIOVec req;
    std::size_t szPayload = 0;
    std::size_t szOverhead = 0;
+   const std::uint64_t maxKeySize = fReader.GetMaxKeySize();
    for (auto &s : onDiskPages) {
       R__ASSERT(s.fSize > 0);
       const std::int64_t readUpTo = req.fOffset + req.fSize;
@@ -642,7 +590,7 @@ ROOT::Experimental::Internal::RPageSourceFile::PrepareSingleCluster(
       const std::uint64_t overhead = std::max(static_cast<std::int64_t>(s.fOffset) - readUpTo, std::int64_t(0));
       const std::uint64_t extent = std::max(static_cast<std::int64_t>(s.fOffset + s.fSize) - readUpTo, std::int64_t(0));
       szPayload += extent;
-      if (overhead <= gapCut) {
+      if (req.fSize + extent < maxKeySize && overhead <= gapCut) {
          szOverhead += overhead;
          s.fBufPos = reinterpret_cast<intptr_t>(req.fBuffer) + s.fOffset - req.fOffset;
          req.fSize += extent;
@@ -670,7 +618,7 @@ ROOT::Experimental::Internal::RPageSourceFile::PrepareSingleCluster(
       ROnDiskPage::Key key(s.fColumnId, s.fPageNo);
       pageMap->Register(key, ROnDiskPage(buffer + s.fBufPos, s.fSize));
    }
-   fCounters->fNPageLoaded.Add(onDiskPages.size());
+   fCounters->fNPageRead.Add(onDiskPages.size());
    for (auto i = currentReadRequestIdx; i < readRequests.size(); ++i) {
       readRequests[i].fBuffer = buffer + reinterpret_cast<intptr_t>(readRequests[i].fBuffer);
    }
@@ -698,8 +646,8 @@ ROOT::Experimental::Internal::RPageSourceFile::LoadClusters(std::span<RCluster::
 
    auto nReqs = readRequests.size();
    auto readvLimits = fFile->GetReadVLimits();
-   // We never want to do vectorized reads of split blobs, so we limit our single size to maxBlobSize.
-   readvLimits.fMaxSingleSize = std::min<size_t>(readvLimits.fMaxSingleSize, fReader.GetMaxBlobSize());
+   // We never want to do vectorized reads of split blobs, so we limit our single size to maxKeySize.
+   readvLimits.fMaxSingleSize = std::min<size_t>(readvLimits.fMaxSingleSize, fReader.GetMaxKeySize());
 
    int iReq = 0;
    while (nReqs > 0) {

@@ -611,9 +611,9 @@ void ROOT::Experimental::Internal::RPageSourceDaos::LoadSealedPage(DescriptorId_
 }
 
 ROOT::Experimental::Internal::RPage
-ROOT::Experimental::Internal::RPageSourceDaos::PopulatePageFromCluster(ColumnHandle_t columnHandle,
-                                                                       const RClusterInfo &clusterInfo,
-                                                                       ClusterSize_t::ValueType idxInCluster)
+ROOT::Experimental::Internal::RPageSourceDaos::LoadPageImpl(ColumnHandle_t columnHandle,
+                                                            const RClusterInfo &clusterInfo,
+                                                            ClusterSize_t::ValueType idxInCluster)
 {
    const auto columnId = columnHandle.fPhysicalId;
    const auto clusterId = clusterInfo.fClusterId;
@@ -648,7 +648,7 @@ ROOT::Experimental::Internal::RPageSourceDaos::PopulatePageFromCluster(ColumnHan
          fNTupleIndex, clusterId, columnId, pageInfo.fLocator.GetPosition<RNTupleLocatorObject64>().fLocation);
       fDaosContainer->ReadSingleAkey(directReadBuffer.get(), sealedPage.GetBufferSize(), daosKey.fOid, daosKey.fDkey,
                                      daosKey.fAkey);
-      fCounters->fNPageLoaded.Inc();
+      fCounters->fNPageRead.Inc();
       fCounters->fNRead.Inc();
       fCounters->fSzReadPayload.Add(sealedPage.GetBufferSize());
       sealedPage.SetBuffer(directReadBuffer.get());
@@ -678,59 +678,8 @@ ROOT::Experimental::Internal::RPageSourceDaos::PopulatePageFromCluster(ColumnHan
                      RPage::RClusterInfo(clusterId, clusterInfo.fColumnOffset));
    fPagePool->RegisterPage(
       newPage, RPageDeleter([](const RPage &page, void *) { RPageAllocatorHeap::DeletePage(page); }, nullptr));
-   fCounters->fNPagePopulated.Inc();
+   fCounters->fNPageUnsealed.Inc();
    return newPage;
-}
-
-ROOT::Experimental::Internal::RPage
-ROOT::Experimental::Internal::RPageSourceDaos::PopulatePage(ColumnHandle_t columnHandle, NTupleSize_t globalIndex)
-{
-   const auto columnId = columnHandle.fPhysicalId;
-   auto cachedPage = fPagePool->GetPage(columnId, globalIndex);
-   if (!cachedPage.IsNull())
-      return cachedPage;
-
-   std::uint64_t idxInCluster;
-   RClusterInfo clusterInfo;
-   {
-      auto descriptorGuard = GetSharedDescriptorGuard();
-      clusterInfo.fClusterId = descriptorGuard->FindClusterId(columnId, globalIndex);
-
-      if (clusterInfo.fClusterId == kInvalidDescriptorId)
-         throw RException(R__FAIL("entry with index " + std::to_string(globalIndex) + " out of bounds"));
-
-      const auto &clusterDescriptor = descriptorGuard->GetClusterDescriptor(clusterInfo.fClusterId);
-      clusterInfo.fColumnOffset = clusterDescriptor.GetColumnRange(columnId).fFirstElementIndex;
-      R__ASSERT(clusterInfo.fColumnOffset <= globalIndex);
-      idxInCluster = globalIndex - clusterInfo.fColumnOffset;
-      clusterInfo.fPageInfo = clusterDescriptor.GetPageRange(columnId).Find(idxInCluster);
-   }
-   return PopulatePageFromCluster(columnHandle, clusterInfo, idxInCluster);
-}
-
-ROOT::Experimental::Internal::RPage
-ROOT::Experimental::Internal::RPageSourceDaos::PopulatePage(ColumnHandle_t columnHandle, RClusterIndex clusterIndex)
-{
-   const auto clusterId = clusterIndex.GetClusterId();
-   const auto idxInCluster = clusterIndex.GetIndex();
-   const auto columnId = columnHandle.fPhysicalId;
-   auto cachedPage = fPagePool->GetPage(columnId, clusterIndex);
-   if (!cachedPage.IsNull())
-      return cachedPage;
-
-   if (clusterId == kInvalidDescriptorId)
-      throw RException(R__FAIL("entry out of bounds"));
-
-   RClusterInfo clusterInfo;
-   {
-      auto descriptorGuard = GetSharedDescriptorGuard();
-      const auto &clusterDescriptor = descriptorGuard->GetClusterDescriptor(clusterId);
-      clusterInfo.fClusterId = clusterId;
-      clusterInfo.fColumnOffset = clusterDescriptor.GetColumnRange(columnId).fFirstElementIndex;
-      clusterInfo.fPageInfo = clusterDescriptor.GetPageRange(columnId).Find(idxInCluster);
-   }
-
-   return PopulatePageFromCluster(columnHandle, clusterInfo, idxInCluster);
 }
 
 void ROOT::Experimental::Internal::RPageSourceDaos::ReleasePage(RPage &page)
@@ -766,7 +715,7 @@ ROOT::Experimental::Internal::RPageSourceDaos::LoadClusters(std::span<RCluster::
                                      RDaosContainer::MultiObjectRWOperation_t &readRequests) {
       auto clusterId = clusterKey.fClusterId;
       // Group page locators by their position in the object store; with caging enabled, this facilitates the
-      // processing of cages' requests together into a single IOV to be populated.
+      // processing of cages' requests together into a single IOV to be loaded.
       std::unordered_map<std::uint32_t, std::vector<RDaosSealedPageLocator>> onDiskPages;
 
       unsigned clusterBufSz = 0, nPages = 0;
@@ -816,7 +765,7 @@ ROOT::Experimental::Internal::RPageSourceDaos::LoadClusters(std::span<RCluster::
 
          cageBuffer += cageSz;
       }
-      fCounters->fNPageLoaded.Add(nPages);
+      fCounters->fNPageRead.Add(nPages);
       fCounters->fSzReadPayload.Add(clusterBufSz);
 
       auto cluster = std::make_unique<RCluster>(clusterId);

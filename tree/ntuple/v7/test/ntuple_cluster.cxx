@@ -42,6 +42,7 @@ protected:
    void LoadStructureImpl() final {}
    RNTupleDescriptor AttachImpl() final { return RNTupleDescriptor(); }
    std::unique_ptr<RPageSource> CloneImpl() const final { return nullptr; }
+   RPage LoadPageImpl(ColumnHandle_t, const RClusterInfo &, ClusterSize_t::ValueType) final { return RPage(); }
 
 public:
    /// Records the cluster IDs requests by LoadClusters() calls
@@ -69,8 +70,6 @@ public:
       auto descriptorGuard = GetExclDescriptorGuard();
       descriptorGuard.MoveIn(descBuilder.MoveDescriptor());
    }
-   RPage PopulatePage(ColumnHandle_t, ROOT::Experimental::NTupleSize_t) final { return RPage(); }
-   RPage PopulatePage(ColumnHandle_t, ROOT::Experimental::RClusterIndex) final { return RPage(); }
    void ReleasePage(RPage &) final {}
    void LoadSealedPage(ROOT::Experimental::DescriptorId_t, ROOT::Experimental::RClusterIndex, RSealedPage &) final {}
    std::vector<std::unique_ptr<RCluster>> LoadClusters(std::span<RCluster::RKey> clusterKeys) final
@@ -348,7 +347,7 @@ TEST(PageStorageFile, LoadClusters)
    EXPECT_EQ(0U, cluster->GetId());
    EXPECT_EQ(0U, cluster->GetNOnDiskPages());
 
-   auto column = ROOT::Experimental::Internal::RColumn::Create<float>(ROOT::Experimental::EColumnType::kReal32, 0);
+   auto column = ROOT::Experimental::Internal::RColumn::Create<float>(ROOT::Experimental::EColumnType::kReal32, 0, 0);
    column->ConnectPageSource(ptId, source);
    clusterKeys[0].fClusterId = 1;
    clusterKeys[0].fPhysicalColumnSet.insert(colId);

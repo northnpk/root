@@ -75,8 +75,15 @@ private:
    NTupleSize_t fFirstElementIndex = 0;
    /// Used to pack and unpack pages on writing/reading
    std::unique_ptr<RColumnElementBase> fElement;
+   /// The column team is a set of columns that serve the same column index for different representation IDs.
+   /// Initially, the team has only one member, the very column it belongs to. Through MergeTeams(), two columns
+   /// can join forces. The team is used to react on suppressed columns: if the current team member has a suppressed
+   /// column for a MapPage() call, it get the page from the active column in the corresponding cluster.
+   std::vector<RColumn *> fTeam;
+   /// Points into fTeam to the column that successfully returned the last page.
+   std::size_t fLastGoodTeamIdx = 0;
 
-   RColumn(EColumnType type, std::uint32_t index);
+   RColumn(EColumnType type, std::uint32_t columnIndex, std::uint16_t representationIndex);
 
    /// Used in Append() and AppendV() to handle the case when the main page reached the target size.
    /// If tail page optimization is enabled, switch the pages; the other page has been flushed when
@@ -112,9 +119,9 @@ private:
 
 public:
    template <typename CppT>
-   static std::unique_ptr<RColumn> Create(EColumnType type, std::uint32_t index)
+   static std::unique_ptr<RColumn> Create(EColumnType type, std::uint32_t columnIdx, std::uint16_t representationIdx)
    {
-      auto column = std::unique_ptr<RColumn>(new RColumn(type, index));
+      auto column = std::unique_ptr<RColumn>(new RColumn(type, columnIdx, representationIdx));
       column->fElement = RColumnElementBase::Generate<CppT>(type);
       return column;
    }
@@ -330,8 +337,18 @@ public:
    }
 
    void Flush();
-   void MapPage(const NTupleSize_t index);
-   void MapPage(RClusterIndex clusterIndex);
+   void CommitSuppressed();
+
+   void MapPage(NTupleSize_t globalIndex) { R__ASSERT(TryMapPage(globalIndex)); }
+   void MapPage(RClusterIndex clusterIndex) { R__ASSERT(TryMapPage(clusterIndex)); }
+   bool TryMapPage(NTupleSize_t globalIndex);
+   bool TryMapPage(RClusterIndex clusterIndex);
+
+   bool ReadPageContains(NTupleSize_t globalIndex) const { return fReadPage.Contains(globalIndex); }
+   bool ReadPageContains(RClusterIndex clusterIndex) const { return fReadPage.Contains(clusterIndex); }
+
+   void MergeTeams(RColumn &other);
+
    NTupleSize_t GetNElements() const { return fNElements; }
    RColumnElementBase *GetElement() const { return fElement.get(); }
    EColumnType GetType() const { return fType; }

@@ -4441,6 +4441,10 @@ void TGraphPainter::PaintScatter(TScatter *theScatter, Option_t* chopt)
 
    TH2F *h = theScatter->GetHistogram();
    if (optionAxis) h->Paint(" ");
+   if (h->GetMinimum() != h->GetMaximum()) {
+      if (minc<h->GetMinimum()) minc = h->GetMinimum();
+      if (maxc>h->GetMaximum()) maxc = h->GetMaximum();
+   }
 
    // Define and paint palette
    if (theColor) {
@@ -4471,13 +4475,17 @@ void TGraphPainter::PaintScatter(TScatter *theScatter, Option_t* chopt)
          Double_t xmax = gPad->PadtoX(xup + xr);
          if (xmax > x2) xmax = gPad->PadtoX(gPad->GetX2()-0.01*xr);
          palette = new TPaletteAxis(xmin,ymin,xmax,ymax,minc,maxc);
-         palette->SetLabelColor(h->GetLabelColor());
-         palette->SetLabelFont(h->GetLabelFont());
-         palette->SetLabelOffset(h->GetLabelOffset());
-         palette->SetLabelSize(h->GetLabelSize());
-         palette->SetTitleOffset(h->GetTitleOffset());
-         palette->SetTitleSize(h->GetTitleSize());
-         palette->SetNdivisions(h->GetNdivisions());
+         palette->SetLabelColor(h->GetZaxis()->GetLabelColor());
+         palette->SetLabelFont(h->GetZaxis()->GetLabelFont());
+         palette->SetLabelOffset(h->GetZaxis()->GetLabelOffset());
+         palette->SetLabelSize(h->GetZaxis()->GetLabelSize());
+         palette->SetTitleOffset(h->GetZaxis()->GetTitleOffset());
+         palette->SetTitleSize(h->GetZaxis()->GetTitleSize());
+         palette->SetNdivisions(h->GetZaxis()->GetNdivisions());
+         palette->SetTitle(h->GetZaxis()->GetTitle());
+         palette->SetTitleColor(h->GetZaxis()->GetTitleColor());
+         palette->SetTitleFont(h->GetZaxis()->GetTitleFont());
+
          functions->AddFirst(palette);
       }
       if (palette) palette->Paint();
@@ -4504,6 +4512,8 @@ void TGraphPainter::PaintScatter(TScatter *theScatter, Option_t* chopt)
          } else {
             c = theColor[i];
          }
+         if (c<minc) continue;
+         if (c>maxc) continue;
          nc = TMath::Nint(((c-minc)/(maxc-minc))*(nbcol-1));
          if (nc > nbcol-1) nc = nbcol-1;
          theScatter->SetMarkerColor(gStyle->GetColorPalette(nc));

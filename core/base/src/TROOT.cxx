@@ -2836,6 +2836,7 @@ void TROOT::SetWebDisplay(const char *webdisplay)
    static TString canName = gEnv->GetValue("Canvas.Name", "");
    static TString brName = gEnv->GetValue("Browser.Name", "");
    static TString trName = gEnv->GetValue("TreeViewer.Name", "");
+   static TString geomName = gEnv->GetValue("GeomPainter.Name", "");
 
    fIsWebDisplayBatch = fBatch;
 
@@ -2870,11 +2871,13 @@ void TROOT::SetWebDisplay(const char *webdisplay)
       // This is necessary when SetWebDisplay() called several times and therefore current settings may differ
       gEnv->SetValue("Canvas.Name", canName);
       gEnv->SetValue("Browser.Name", brName);
-      gEnv->SetValue("TreeViewer.Name", "RTreeViewer");
+      gEnv->SetValue("TreeViewer.Name", trName);
+      gEnv->SetValue("GeomPainter.Name", geomName);
    } else {
       gEnv->SetValue("Canvas.Name", "TRootCanvas");
       gEnv->SetValue("Browser.Name", "TRootBrowser");
-      gEnv->SetValue("TreeViewer.Name", trName);
+      gEnv->SetValue("TreeViewer.Name", "TTreeViewer");
+      gEnv->SetValue("GeomPainter.Name", "root");
    }
 }
 

@@ -427,7 +427,7 @@ ROOT::Experimental::RFieldBase::RColumnRepresentations::RColumnRepresentations()
 }
 
 ROOT::Experimental::RFieldBase::RColumnRepresentations::RColumnRepresentations(
-   const TypesList_t &serializationTypes, const TypesList_t &deserializationExtraTypes)
+   const Selection_t &serializationTypes, const Selection_t &deserializationExtraTypes)
    : fSerializationTypes(serializationTypes), fDeserializationTypes(serializationTypes)
 {
    fDeserializationTypes.insert(fDeserializationTypes.end(),
@@ -649,6 +649,8 @@ ROOT::Experimental::RFieldBase::Create(const std::string &fieldName, const std::
       result = std::make_unique<RField<bool>>(fieldName);
    } else if (canonicalType == "char") {
       result = std::make_unique<RField<char>>(fieldName);
+   } else if (canonicalType == "signed char") {
+      result = std::make_unique<RField<signed char>>(fieldName);
    } else if (canonicalType == "unsigned char") {
       result = std::make_unique<RField<unsigned char>>(fieldName);
    } else if (canonicalType == "short") {
@@ -875,8 +877,8 @@ std::unique_ptr<ROOT::Experimental::RFieldBase> ROOT::Experimental::RFieldBase::
    clone->fTypeAlias = fTypeAlias;
    clone->fOnDiskId = fOnDiskId;
    clone->fDescription = fDescription;
-   // We can just copy the pointer because fColumnRepresentative points into a static structure
-   clone->fColumnRepresentative = fColumnRepresentative;
+   // We can just copy the references because fColumnRepresentatives point into a static structure
+   clone->fColumnRepresentatives = fColumnRepresentatives;
    return clone;
 }
 
@@ -976,8 +978,15 @@ std::vector<const ROOT::Experimental::RFieldBase *> ROOT::Experimental::RFieldBa
 
 void ROOT::Experimental::RFieldBase::CommitCluster()
 {
-   for (auto& column : fColumns) {
-      column->Flush();
+   if (!fAvailableColumns.empty()) {
+      const auto activeRepresentationIndex = fPrincipalColumn->GetRepresentationIndex();
+      for (auto &column : fAvailableColumns) {
+         if (column->GetRepresentationIndex() == activeRepresentationIndex) {
+            column->Flush();
+         } else {
+            column->CommitSuppressed();
+         }
+      }
    }
    CommitClusterImpl();
 }
@@ -996,35 +1005,58 @@ void ROOT::Experimental::RFieldBase::SetOnDiskId(DescriptorId_t id)
    fOnDiskId = id;
 }
 
-const ROOT::Experimental::RFieldBase::ColumnRepresentation_t &
-ROOT::Experimental::RFieldBase::GetColumnRepresentative() const
+ROOT::Experimental::RFieldBase::RColumnRepresentations::Selection_t
+ROOT::Experimental::RFieldBase::GetColumnRepresentatives() const
 {
-   if (fColumnRepresentative)
-      return *fColumnRepresentative;
-   return GetColumnRepresentations().GetSerializationDefault();
+   if (fColumnRepresentatives.empty()) {
+      return {GetColumnRepresentations().GetSerializationDefault()};
+   }
+
+   RColumnRepresentations::Selection_t result;
+   result.reserve(fColumnRepresentatives.size());
+   for (const auto &r : fColumnRepresentatives) {
+      result.emplace_back(r.get());
+   }
+   return result;
 }
 
-void ROOT::Experimental::RFieldBase::SetColumnRepresentative(const ColumnRepresentation_t &representative)
+void ROOT::Experimental::RFieldBase::SetColumnRepresentatives(
+   const RColumnRepresentations::Selection_t &representatives)
 {
    if (fState != EState::kUnconnected)
       throw RException(R__FAIL("cannot set column representative once field is connected"));
    const auto &validTypes = GetColumnRepresentations().GetSerializationTypes();
-   auto itRepresentative = std::find(validTypes.begin(), validTypes.end(), representative);
-   if (itRepresentative == std::end(validTypes))
-      throw RException(R__FAIL("invalid column representative"));
-   fColumnRepresentative = &(*itRepresentative);
+   fColumnRepresentatives.clear();
+   fColumnRepresentatives.reserve(representatives.size());
+   for (const auto &r : representatives) {
+      auto itRepresentative = std::find(validTypes.begin(), validTypes.end(), r);
+      if (itRepresentative == std::end(validTypes))
+         throw RException(R__FAIL("invalid column representative"));
+      fColumnRepresentatives.emplace_back(*itRepresentative);
+   }
 }
 
 const ROOT::Experimental::RFieldBase::ColumnRepresentation_t &
-ROOT::Experimental::RFieldBase::EnsureCompatibleColumnTypes(const RNTupleDescriptor &desc) const
+ROOT::Experimental::RFieldBase::EnsureCompatibleColumnTypes(const RNTupleDescriptor &desc,
+                                                            std::uint16_t representationIndex) const
 {
+   static const ColumnRepresentation_t kEmpty;
+
    if (fOnDiskId == kInvalidDescriptorId)
-      throw RException(R__FAIL("No on-disk column information for field `" + GetQualifiedFieldName() + "`"));
+      throw RException(R__FAIL("No on-disk field information for `" + GetQualifiedFieldName() + "`"));
 
    ColumnRepresentation_t onDiskTypes;
    for (const auto &c : desc.GetColumnIterable(fOnDiskId)) {
-      onDiskTypes.emplace_back(c.GetType());
+      if (c.GetRepresentationIndex() == representationIndex)
+         onDiskTypes.emplace_back(c.GetType());
    }
+   if (onDiskTypes.empty()) {
+      if (representationIndex == 0) {
+         throw RException(R__FAIL("No on-disk column information for field `" + GetQualifiedFieldName() + "`"));
+      }
+      return kEmpty;
+   }
+
    for (const auto &t : GetColumnRepresentations().GetDeserializationTypes()) {
       if (t == onDiskTypes)
          return t;
@@ -1034,10 +1066,10 @@ ROOT::Experimental::RFieldBase::EnsureCompatibleColumnTypes(const RNTupleDescrip
    for (const auto &t : onDiskTypes) {
       if (!columnTypeNames.empty())
          columnTypeNames += ", ";
-      columnTypeNames += Internal::RColumnElementBase::GetTypeName(t);
+      columnTypeNames += std::string("`") + Internal::RColumnElementBase::GetTypeName(t) + "`";
    }
-   throw RException(R__FAIL("On-disk column types `" + columnTypeNames + "` for field `" + GetQualifiedFieldName() +
-                            "` cannot be matched."));
+   throw RException(R__FAIL("On-disk column types {" + columnTypeNames + "} for field `" + GetQualifiedFieldName() +
+                            "` cannot be matched (representation index: " + std::to_string(representationIndex) + ")"));
 }
 
 size_t ROOT::Experimental::RFieldBase::AddReadCallback(ReadCallback_t func)
@@ -1056,7 +1088,7 @@ void ROOT::Experimental::RFieldBase::RemoveReadCallback(size_t idx)
 void ROOT::Experimental::RFieldBase::AutoAdjustColumnTypes(const RNTupleWriteOptions &options)
 {
    if ((options.GetCompression() == 0) && HasDefaultColumnRepresentative()) {
-      ColumnRepresentation_t rep = GetColumnRepresentative();
+      ColumnRepresentation_t rep = GetColumnRepresentations().GetSerializationDefault();
       for (auto &colType : rep) {
          switch (colType) {
          case EColumnType::kSplitIndex64: colType = EColumnType::kIndex64; break;
@@ -1069,11 +1101,11 @@ void ROOT::Experimental::RFieldBase::AutoAdjustColumnTypes(const RNTupleWriteOpt
          default: break;
          }
       }
-      SetColumnRepresentative(rep);
+      SetColumnRepresentatives({rep});
    }
 
    if (options.GetHasSmallClusters()) {
-      ColumnRepresentation_t rep = GetColumnRepresentative();
+      ColumnRepresentation_t rep = GetColumnRepresentations().GetSerializationDefault();
       for (auto &colType : rep) {
          switch (colType) {
          case EColumnType::kSplitIndex64: colType = EColumnType::kSplitIndex32; break;
@@ -1081,11 +1113,11 @@ void ROOT::Experimental::RFieldBase::AutoAdjustColumnTypes(const RNTupleWriteOpt
          default: break;
          }
       }
-      SetColumnRepresentative(rep);
+      SetColumnRepresentatives({rep});
    }
 
    if (fTypeAlias == "Double32_t")
-      SetColumnRepresentative({EColumnType::kSplitReal32});
+      SetColumnRepresentatives({{EColumnType::kSplitReal32}});
 }
 
 void ROOT::Experimental::RFieldBase::ConnectPageSink(Internal::RPageSink &pageSink, NTupleSize_t firstEntry)
@@ -1098,10 +1130,11 @@ void ROOT::Experimental::RFieldBase::ConnectPageSink(Internal::RPageSink &pageSi
    AutoAdjustColumnTypes(pageSink.GetWriteOptions());
 
    GenerateColumns();
-   if (!fColumns.empty())
-      fPrincipalColumn = fColumns[0].get();
-   for (auto &column : fColumns) {
-      auto firstElementIndex = (column.get() == fPrincipalColumn) ? EntryToColumnElementIndex(firstEntry) : 0;
+   for (auto &column : fAvailableColumns) {
+      // Only the first column of every representation can be a deferred column. In all column representations,
+      // larger column indexes are data columns of collections (string, unsplit) and thus
+      // they have no elements on late model extension
+      auto firstElementIndex = (column->GetIndex() == 0) ? EntryToColumnElementIndex(firstEntry) : 0;
       column->ConnectPageSink(fOnDiskId, pageSink, firstElementIndex);
    }
 
@@ -1120,7 +1153,7 @@ void ROOT::Experimental::RFieldBase::ConnectPageSource(Internal::RPageSource &pa
    if (fState != EState::kUnconnected)
       throw RException(R__FAIL("invalid attempt to connect an already connected field to a page source"));
 
-   if (fColumnRepresentative)
+   if (!fColumnRepresentatives.empty())
       throw RException(R__FAIL("fixed column representative only valid when connecting to a page sink"));
    if (!fDescription.empty())
       throw RException(R__FAIL("setting description only valid when connecting to a page sink"));
@@ -1136,16 +1169,16 @@ void ROOT::Experimental::RFieldBase::ConnectPageSource(Internal::RPageSource &pa
       const auto descriptorGuard = pageSource.GetSharedDescriptorGuard();
       const RNTupleDescriptor &desc = descriptorGuard.GetRef();
       GenerateColumns(desc);
-      ColumnRepresentation_t onDiskColumnTypes;
-      onDiskColumnTypes.reserve(fColumns.size());
-      for (const auto &c : fColumns) {
-         onDiskColumnTypes.emplace_back(c->GetType());
+      if (fColumnRepresentatives.empty()) {
+         // If we didn't get columns from the descriptor, ensure that we actually expect a field without columns
+         for (const auto &t : GetColumnRepresentations().GetDeserializationTypes()) {
+            if (t.empty()) {
+               fColumnRepresentatives = {t};
+               break;
+            }
+         }
       }
-      for (const auto &t : GetColumnRepresentations().GetDeserializationTypes()) {
-         if (t == onDiskColumnTypes)
-            fColumnRepresentative = &t;
-      }
-      R__ASSERT(fColumnRepresentative);
+      R__ASSERT(!fColumnRepresentatives.empty());
       if (fOnDiskId != kInvalidDescriptorId) {
          const auto &fieldDesc = desc.GetFieldDescriptor(fOnDiskId);
          fOnDiskTypeVersion = fieldDesc.GetTypeVersion();
@@ -1153,9 +1186,7 @@ void ROOT::Experimental::RFieldBase::ConnectPageSource(Internal::RPageSource &pa
             fOnDiskTypeChecksum = *fieldDesc.GetTypeChecksum();
       }
    }
-   if (!fColumns.empty())
-      fPrincipalColumn = fColumns[0].get();
-   for (auto& column : fColumns)
+   for (auto &column : fAvailableColumns)
       column->ConnectPageSource(fOnDiskId, pageSource);
    OnConnectPageSource();
 
@@ -1321,7 +1352,7 @@ void ROOT::Experimental::RField<float>::AcceptVisitor(Detail::RFieldVisitor &vis
 
 void ROOT::Experimental::RField<float>::SetHalfPrecision()
 {
-   SetColumnRepresentative({EColumnType::kReal16});
+   SetColumnRepresentatives({{EColumnType::kReal16}});
 }
 
 //------------------------------------------------------------------------------
@@ -1470,10 +1501,10 @@ std::size_t ROOT::Experimental::RField<std::string>::AppendImpl(const void *from
 {
    auto typedValue = static_cast<const std::string *>(from);
    auto length = typedValue->length();
-   fColumns[1]->AppendV(typedValue->data(), length);
+   fAuxiliaryColumn->AppendV(typedValue->data(), length);
    fIndex += length;
-   fColumns[0]->Append(&fIndex);
-   return length + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fIndex);
+   return length + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RField<std::string>::ReadGlobalImpl(ROOT::Experimental::NTupleSize_t globalIndex, void *to)
@@ -1486,7 +1517,7 @@ void ROOT::Experimental::RField<std::string>::ReadGlobalImpl(ROOT::Experimental:
       typedValue->clear();
    } else {
       typedValue->resize(nChars);
-      fColumns[1]->ReadV(collectionStart, nChars, const_cast<char *>(typedValue->data()));
+      fAuxiliaryColumn->ReadV(collectionStart, nChars, const_cast<char *>(typedValue->data()));
    }
 }
 
@@ -1862,10 +1893,10 @@ std::size_t ROOT::Experimental::RUnsplitField::AppendImpl(const void *from)
    fClass->Streamer(const_cast<void *>(from), buffer);
 
    auto nbytes = buffer.Length();
-   fColumns[1]->AppendV(buffer.Buffer(), buffer.Length());
+   fAuxiliaryColumn->AppendV(buffer.Buffer(), buffer.Length());
    fIndex += nbytes;
-   fColumns[0]->Append(&fIndex);
-   return nbytes + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fIndex);
+   return nbytes + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RUnsplitField::ReadGlobalImpl(NTupleSize_t globalIndex, void *to)
@@ -1875,7 +1906,7 @@ void ROOT::Experimental::RUnsplitField::ReadGlobalImpl(NTupleSize_t globalIndex,
    fPrincipalColumn->GetCollectionInfo(globalIndex, &collectionStart, &nbytes);
 
    TBufferFile buffer(TBuffer::kRead, nbytes);
-   fColumns[1]->ReadV(collectionStart, nbytes, buffer.Buffer());
+   fAuxiliaryColumn->ReadV(collectionStart, nbytes, buffer.Buffer());
    fClass->Streamer(to, buffer);
 }
 
@@ -2118,8 +2149,8 @@ std::size_t ROOT::Experimental::RProxiedCollectionField::AppendImpl(const void *
    }
 
    fNWritten += count;
-   fColumns[0]->Append(&fNWritten);
-   return nbytes + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fNWritten);
+   return nbytes + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RProxiedCollectionField::ReadGlobalImpl(NTupleSize_t globalIndex, void *to)
@@ -2370,8 +2401,8 @@ std::size_t ROOT::Experimental::RVectorField::AppendImpl(const void *from)
    }
 
    fNWritten += count;
-   fColumns[0]->Append(&fNWritten);
-   return nbytes + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fNWritten);
+   return nbytes + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RVectorField::ReadGlobalImpl(NTupleSize_t globalIndex, void *to)
@@ -2509,8 +2540,8 @@ std::size_t ROOT::Experimental::RRVecField::AppendImpl(const void *from)
    }
 
    fNWritten += *sizePtr;
-   fColumns[0]->Append(&fNWritten);
-   return nbytes + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fNWritten);
+   return nbytes + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RRVecField::ReadGlobalImpl(NTupleSize_t globalIndex, void *to)
@@ -2748,8 +2779,8 @@ std::size_t ROOT::Experimental::RField<std::vector<bool>>::AppendImpl(const void
       CallAppendOn(*fSubFields[0], &bval);
    }
    fNWritten += count;
-   fColumns[0]->Append(&fNWritten);
-   return count + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fNWritten);
+   return count + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RField<std::vector<bool>>::ReadGlobalImpl(NTupleSize_t globalIndex, void *to)
@@ -3086,7 +3117,7 @@ std::size_t ROOT::Experimental::RBitsetField::AppendImpl(const void *from)
    for (std::size_t word = 0; word < (fN + kBitsPerWord - 1) / kBitsPerWord; ++word) {
       for (std::size_t mask = 0; (mask < kBitsPerWord) && (i < fN); ++mask, ++i) {
          elementValue = (asULongArray[word] & (static_cast<Word_t>(1) << mask)) != 0;
-         fColumns[0]->Append(&elementValue);
+         fPrincipalColumn->Append(&elementValue);
       }
    }
    return fN;
@@ -3097,7 +3128,7 @@ void ROOT::Experimental::RBitsetField::ReadGlobalImpl(NTupleSize_t globalIndex, 
    auto *asULongArray = static_cast<Word_t *>(to);
    bool elementValue;
    for (std::size_t i = 0; i < fN; ++i) {
-      fColumns[0]->Read(globalIndex * fN + i, &elementValue);
+      fPrincipalColumn->Read(globalIndex * fN + i, &elementValue);
       Word_t mask = static_cast<Word_t>(1) << (i % kBitsPerWord);
       Word_t bit = static_cast<Word_t>(elementValue) << (i % kBitsPerWord);
       asULongArray[i / kBitsPerWord] = (asULongArray[i / kBitsPerWord] & ~mask) | bit;
@@ -3192,7 +3223,7 @@ std::size_t ROOT::Experimental::RVariantField::AppendImpl(const void *from)
       index = fNWritten[tag - 1]++;
    }
    RColumnSwitch varSwitch(ClusterSize_t(index), tag);
-   fColumns[0]->Append(&varSwitch);
+   fPrincipalColumn->Append(&varSwitch);
    return nbytes + sizeof(RColumnSwitch);
 }
 
@@ -3314,8 +3345,8 @@ std::size_t ROOT::Experimental::RMapField::AppendImpl(const void *from)
       count++;
    }
    fNWritten += count;
-   fColumns[0]->Append(&fNWritten);
-   return nbytes + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(&fNWritten);
+   return nbytes + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RMapField::ReadGlobalImpl(NTupleSize_t globalIndex, void *to)
@@ -3375,22 +3406,40 @@ ROOT::Experimental::RNullableField::GetColumnRepresentations() const
 
 void ROOT::Experimental::RNullableField::GenerateColumns()
 {
-   if (GetColumnRepresentative()[0] == EColumnType::kBit) {
-      fDefaultItemValue = std::make_unique<RValue>(fSubFields[0]->CreateValue());
-      fColumns.emplace_back(Internal::RColumn::Create<bool>(EColumnType::kBit, 0));
-   } else {
-      fColumns.emplace_back(Internal::RColumn::Create<ClusterSize_t>(GetColumnRepresentative()[0], 0));
+   const auto r = GetColumnRepresentatives();
+   const auto N = r.size();
+   fAvailableColumns.reserve(N);
+   for (std::uint16_t i = 0; i < N; ++i) {
+      if (r[i][0] == EColumnType::kBit) {
+         if (!fDefaultItemValue)
+            fDefaultItemValue = std::make_unique<RValue>(fSubFields[0]->CreateValue());
+         fAvailableColumns.emplace_back(Internal::RColumn::Create<bool>(EColumnType::kBit, 0, i));
+      } else {
+         fAvailableColumns.emplace_back(Internal::RColumn::Create<ClusterSize_t>(r[i][0], 0, i));
+      }
    }
+   fPrincipalColumn = fAvailableColumns[0].get();
 }
 
 void ROOT::Experimental::RNullableField::GenerateColumns(const RNTupleDescriptor &desc)
 {
-   auto onDiskTypes = EnsureCompatibleColumnTypes(desc);
-   if (onDiskTypes[0] == EColumnType::kBit) {
-      fColumns.emplace_back(Internal::RColumn::Create<bool>(EColumnType::kBit, 0));
-   } else {
-      fColumns.emplace_back(Internal::RColumn::Create<ClusterSize_t>(onDiskTypes[0], 0));
-   }
+   std::uint16_t representationIndex = 0;
+   do {
+      const auto &onDiskTypes = EnsureCompatibleColumnTypes(desc, representationIndex);
+      if (onDiskTypes.empty())
+         break;
+
+      if (onDiskTypes[0] == EColumnType::kBit) {
+         fAvailableColumns.emplace_back(Internal::RColumn::Create<bool>(EColumnType::kBit, 0, representationIndex));
+      } else {
+         fAvailableColumns.emplace_back(
+            Internal::RColumn::Create<ClusterSize_t>(onDiskTypes[0], 0, representationIndex));
+      }
+      fColumnRepresentatives.emplace_back(onDiskTypes);
+
+      representationIndex++;
+   } while (true);
+   fPrincipalColumn = fAvailableColumns[0].get();
 }
 
 std::size_t ROOT::Experimental::RNullableField::AppendNull()
@@ -3421,6 +3470,19 @@ std::size_t ROOT::Experimental::RNullableField::AppendValue(const void *from)
 
 ROOT::Experimental::RClusterIndex ROOT::Experimental::RNullableField::GetItemIndex(NTupleSize_t globalIndex)
 {
+   // We ensure first that the principle column points to the non-suppressed column and
+   // that it has the correct page mapped
+   if (!fPrincipalColumn->ReadPageContains(globalIndex) && !fPrincipalColumn->TryMapPage(globalIndex)) {
+      for (const auto &c : fAvailableColumns) {
+         if (!c->TryMapPage(globalIndex))
+            continue;
+
+         fPrincipalColumn = c.get();
+         break;
+      }
+      R__ASSERT(fPrincipalColumn->ReadPageContains(globalIndex));
+   }
+
    RClusterIndex nullIndex;
    if (fPrincipalColumn->GetType() == EColumnType::kBit) {
       const bool isValidItem = *fPrincipalColumn->Map<bool>(globalIndex);
@@ -3431,6 +3493,22 @@ ROOT::Experimental::RClusterIndex ROOT::Experimental::RNullableField::GetItemInd
       fPrincipalColumn->GetCollectionInfo(globalIndex, &collectionStart, &collectionSize);
       return (collectionSize == 0) ? nullIndex : collectionStart;
    }
+}
+
+void ROOT::Experimental::RNullableField::ReadInClusterImpl(RClusterIndex clusterIndex, void *to)
+{
+   if ((fAvailableColumns.size() > 1) && !fPrincipalColumn->TryMapPage(clusterIndex)) {
+      for (const auto &c : fAvailableColumns) {
+         if (!c->TryMapPage(clusterIndex))
+            continue;
+
+         fPrincipalColumn = c.get();
+         break;
+      }
+      R__ASSERT(fPrincipalColumn->ReadPageContains(clusterIndex));
+   }
+
+   ReadGlobalImpl(fPrincipalColumn->GetGlobalIndex(clusterIndex), to);
 }
 
 void ROOT::Experimental::RNullableField::AcceptVisitor(Detail::RFieldVisitor &visitor) const
@@ -3800,8 +3878,8 @@ std::size_t ROOT::Experimental::RCollectionField::AppendImpl(const void *from)
    std::size_t bytesWritten = fCollectionWriter->fBytesWritten;
    fCollectionWriter->fBytesWritten = 0;
 
-   fColumns[0]->Append(from);
-   return bytesWritten + fColumns[0]->GetElement()->GetPackedSize();
+   fPrincipalColumn->Append(from);
+   return bytesWritten + fPrincipalColumn->GetElement()->GetPackedSize();
 }
 
 void ROOT::Experimental::RCollectionField::ReadGlobalImpl(NTupleSize_t, void *)

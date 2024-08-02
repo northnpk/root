@@ -38,8 +38,8 @@ TEST(RNTupleCompat, FeatureFlag)
       RFieldDescriptorBuilder::FromField(ROOT::Experimental::RFieldZero()).FieldId(0).MakeDescriptor().Unwrap());
    ASSERT_TRUE(static_cast<bool>(descBuilder.EnsureValidDescriptor()));
 
-   auto writer = RNTupleFileWriter::Recreate("ntpl", fileGuard.GetPath(), 0, EContainerFormat::kTFile,
-                                             RNTupleWriteOptions::kDefaultMaxKeySize);
+   RNTupleWriteOptions options;
+   auto writer = RNTupleFileWriter::Recreate("ntpl", fileGuard.GetPath(), EContainerFormat::kTFile, options);
    RNTupleSerializer serializer;
 
    auto ctx = serializer.SerializeHeader(nullptr, descBuilder.GetDescriptor());
@@ -120,7 +120,7 @@ TEST(RNTupleCompat, FwdCompat_FutureNTuple)
    {
       auto tfile = std::unique_ptr<TFile>(TFile::Open(fileGuard.GetPath().c_str(), "READ"));
       assert(!tfile->IsZombie());
-      auto *ntuple = tfile->Get<RNTuple>(kNtupleObjName);
+      auto ntuple = std::unique_ptr<RNTuple>(tfile->Get<RNTuple>(kNtupleObjName));
       EXPECT_EQ(ntuple->GetVersionEpoch(), RXTuple{}.fVersionEpoch);
       EXPECT_EQ(ntuple->GetVersionMajor(), RXTuple{}.fVersionMajor);
       EXPECT_EQ(ntuple->GetVersionMinor(), RXTuple{}.fVersionMinor);

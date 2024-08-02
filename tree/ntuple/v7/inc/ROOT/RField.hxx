@@ -69,6 +69,7 @@ class REntry;
 
 namespace Internal {
 struct RFieldCallbackInjector;
+struct RFieldRepresentationModifier;
 class RPageSink;
 class RPageSource;
 // TODO(jblomer): find a better way to not have these three methods in the RFieldBase public API
@@ -99,6 +100,7 @@ This is and can only be partially enforced through C++.
 class RFieldBase {
    friend class ROOT::Experimental::RCollectionField; // to move the fields from the collection model
    friend struct ROOT::Experimental::Internal::RFieldCallbackInjector; // used for unit tests
+   friend struct ROOT::Experimental::Internal::RFieldRepresentationModifier; // used for unit tests
    friend void Internal::CallCommitClusterOnField(RFieldBase &);
    friend void Internal::CallConnectPageSinkOnField(RFieldBase &, Internal::RPageSink &, NTupleSize_t);
    friend void Internal::CallConnectPageSourceOnField(RFieldBase &, Internal::RPageSource &);
@@ -172,20 +174,22 @@ public:
    /// i.e. for the example above, the unpacking of 32bit ints to 64bit pages must be implemented in RColumnElement.hxx
    class RColumnRepresentations {
    public:
-      using TypesList_t = std::vector<ColumnRepresentation_t>;
+      /// A list of column representations
+      using Selection_t = std::vector<ColumnRepresentation_t>;
+
       RColumnRepresentations();
-      RColumnRepresentations(const TypesList_t &serializationTypes, const TypesList_t &deserializationExtraTypes);
+      RColumnRepresentations(const Selection_t &serializationTypes, const Selection_t &deserializationExtraTypes);
 
       /// The first column list from fSerializationTypes is the default for writing.
       const ColumnRepresentation_t &GetSerializationDefault() const { return fSerializationTypes[0]; }
-      const TypesList_t &GetSerializationTypes() const { return fSerializationTypes; }
-      const TypesList_t &GetDeserializationTypes() const { return fDeserializationTypes; }
+      const Selection_t &GetSerializationTypes() const { return fSerializationTypes; }
+      const Selection_t &GetDeserializationTypes() const { return fDeserializationTypes; }
 
    private:
-      TypesList_t fSerializationTypes;
+      Selection_t fSerializationTypes;
       /// The union of the serialization types and the deserialization extra types.  Duplicates the serialization types
       /// list but the benenfit is that GetDeserializationTypes does not need to compile the list.
-      TypesList_t fDeserializationTypes;
+      Selection_t fDeserializationTypes;
    }; // class RColumnRepresentations
 
    /// Points to an object with RNTuple I/O support and keeps a pointer to the corresponding field.
@@ -398,12 +402,19 @@ protected:
    std::vector<std::unique_ptr<RFieldBase>> fSubFields;
    /// Sub fields point to their mother field
    RFieldBase* fParent;
-   /// Points into fColumns.  All fields that have columns have a distinct main column. For simple fields
-   /// (float, int, ...), the principal column corresponds to the field type. For collection fields expect std::array,
+   /// All fields that have columns have a distinct main column. E.g., for simple fields (float, int, ...), the
+   /// principal column corresponds to the field type. For collection fields except fixed-sized arrays,
    /// the main column is the offset field.  Class fields have no column of their own.
-   Internal::RColumn *fPrincipalColumn;
+   /// When reading, points to any column of the column team of the active representation. Usually, this is just
+   /// the first column, except for the nullable field.
+   /// When writing, points to the first column index of the currently active (not suppressed) column representation.
+   Internal::RColumn *fPrincipalColumn = nullptr;
+   /// Some fields have a second column in its column representation. In this case, fAuxiliaryColumn points into
+   /// fAvailableColumns to the column that immediately follows the column fPrincipalColumn points to.
+   Internal::RColumn *fAuxiliaryColumn = nullptr;
    /// The columns are connected either to a sink or to a source (not to both); they are owned by the field.
-   std::vector<std::unique_ptr<Internal::RColumn>> fColumns;
+   /// Contains all columns of all representations in order of representation and column index.
+   std::vector<std::unique_ptr<Internal::RColumn>> fAvailableColumns;
    /// Properties of the type that allow for optimizations of collections of that type
    int fTraits = 0;
    /// A typedef or using name that was used when creating the field
@@ -415,34 +426,70 @@ protected:
    /// TClass checksum cached from the descriptor after a call to `ConnectPageSource()`. Only set
    /// for classes with dictionaries.
    std::uint32_t fOnDiskTypeChecksum = 0;
-   /// Points into the static vector GetColumnRepresentations().GetSerializationTypes() when SetColumnRepresentative
-   /// is called.  Otherwise GetColumnRepresentative returns the default representation.
-   const ColumnRepresentation_t *fColumnRepresentative = nullptr;
+   /// Pointers into the static vector GetColumnRepresentations().GetSerializationTypes() when
+   /// SetColumnRepresentatives is called.  Otherwise (if empty) GetColumnRepresentatives() returns a vector
+   /// with a single element, the default representation.
+   std::vector<std::reference_wrapper<const ColumnRepresentation_t>> fColumnRepresentatives;
 
    /// Helpers for generating columns. We use the fact that most fields have the same C++/memory types
    /// for all their column representations.
    /// Where possible, we call the helpers not from the header to reduce compilation time.
-   template <int ColumnIndexT, typename HeadT, typename... TailTs>
-   void GenerateColumnsImpl(const ColumnRepresentation_t &representation)
+   template <std::uint32_t ColumnIndexT, typename HeadT, typename... TailTs>
+   void GenerateColumnsImpl(const ColumnRepresentation_t &representation, std::uint16_t representationIndex)
    {
       assert(ColumnIndexT < representation.size());
-      fColumns.emplace_back(Internal::RColumn::Create<HeadT>(representation[ColumnIndexT], ColumnIndexT));
+      fAvailableColumns.emplace_back(
+         Internal::RColumn::Create<HeadT>(representation[ColumnIndexT], ColumnIndexT, representationIndex));
+
+      // Initially, the first two columns become the active column representation
+      if (representationIndex == 0 && !fPrincipalColumn) {
+         fPrincipalColumn = fAvailableColumns.back().get();
+      } else if (representationIndex == 0 && !fAuxiliaryColumn) {
+         fAuxiliaryColumn = fAvailableColumns.back().get();
+      } else {
+         // We currently have no fields with more than 2 columns in its column representation
+         R__ASSERT(representationIndex > 0);
+      }
+
       if constexpr (sizeof...(TailTs))
-         GenerateColumnsImpl<ColumnIndexT + 1, TailTs...>(representation);
+         GenerateColumnsImpl<ColumnIndexT + 1, TailTs...>(representation, representationIndex);
    }
 
    /// For writing, use the currently set column representative
    template <typename... ColumnCppTs>
    void GenerateColumnsImpl()
    {
-      GenerateColumnsImpl<0, ColumnCppTs...>(GetColumnRepresentative());
+      if (fColumnRepresentatives.empty()) {
+         fAvailableColumns.reserve(sizeof...(ColumnCppTs));
+         GenerateColumnsImpl<0, ColumnCppTs...>(GetColumnRepresentations().GetSerializationDefault(), 0);
+      } else {
+         const auto N = fColumnRepresentatives.size();
+         fAvailableColumns.reserve(N * sizeof...(ColumnCppTs));
+         for (unsigned i = 0; i < N; ++i) {
+            GenerateColumnsImpl<0, ColumnCppTs...>(fColumnRepresentatives[i].get(), i);
+         }
+      }
    }
 
    /// For reading, use the on-disk column list
    template <typename... ColumnCppTs>
    void GenerateColumnsImpl(const RNTupleDescriptor &desc)
    {
-      GenerateColumnsImpl<0, ColumnCppTs...>(EnsureCompatibleColumnTypes(desc));
+      std::uint16_t representationIndex = 0;
+      do {
+         const auto &onDiskTypes = EnsureCompatibleColumnTypes(desc, representationIndex);
+         if (onDiskTypes.empty())
+            break;
+         GenerateColumnsImpl<0, ColumnCppTs...>(onDiskTypes, representationIndex);
+         fColumnRepresentatives.emplace_back(onDiskTypes);
+         if (representationIndex > 0) {
+            for (std::size_t i = 0; i < sizeof...(ColumnCppTs); ++i) {
+               fAvailableColumns[i]->MergeTeams(
+                  *fAvailableColumns[representationIndex * sizeof...(ColumnCppTs) + i].get());
+            }
+         }
+         representationIndex++;
+      } while (true);
    }
 
    /// Implementations in derived classes should return a static RColumnRepresentations object. The default
@@ -455,9 +502,14 @@ protected:
    /// The default implementation does not attach any columns to the field. The method should check, using the page
    /// source and fOnDiskId, if the column types match and throw if they don't.
    virtual void GenerateColumns(const RNTupleDescriptor & /*desc*/) {}
-   /// Returns the on-disk column types found in the provided descriptor for fOnDiskId. Throws an exception if the types
-   /// don't match any of the deserialization types from GetColumnRepresentations().
-   const ColumnRepresentation_t &EnsureCompatibleColumnTypes(const RNTupleDescriptor &desc) const;
+   /// Returns the on-disk column types found in the provided descriptor for fOnDiskId and the given
+   /// representation index. If there are no columns for the given representation index, return an empty
+   /// ColumnRepresentation_t list. Otherwise, the returned reference points into the static array returned by
+   /// GetColumnRepresentations().
+   /// Throws an exception if the types on disk don't match any of the deserialization types from
+   /// GetColumnRepresentations().
+   const ColumnRepresentation_t &
+   EnsureCompatibleColumnTypes(const RNTupleDescriptor &desc, std::uint16_t representationIndex) const;
    /// When connecting a field to a page sink, the field's default column representation is subject
    /// to adjustment according to the write options. E.g., if compression is turned off, encoded columns
    /// are changed to their unencoded counterparts.
@@ -726,13 +778,13 @@ public:
    void SetOnDiskId(DescriptorId_t id);
 
    /// Returns the fColumnRepresentative pointee or, if unset, the field's default representative
-   const ColumnRepresentation_t &GetColumnRepresentative() const;
+   RColumnRepresentations::Selection_t GetColumnRepresentatives() const;
    /// Fixes a column representative. This can only be done _before_ connecting the field to a page sink.
    /// Otherwise, or if the provided representation is not in the list of GetColumnRepresentations,
    /// an exception is thrown
-   void SetColumnRepresentative(const ColumnRepresentation_t &representative);
+   void SetColumnRepresentatives(const RColumnRepresentations::Selection_t &representatives);
    /// Whether or not an explicit column representative was set
-   bool HasDefaultColumnRepresentative() const { return fColumnRepresentative == nullptr; }
+   bool HasDefaultColumnRepresentative() const { return fColumnRepresentatives.empty(); }
 
    /// Indicates an evolution of the mapping scheme from C++ type to columns
    virtual std::uint32_t GetFieldVersion() const { return 0; }
@@ -759,6 +811,25 @@ public:
 
    virtual void AcceptVisitor(Detail::RFieldVisitor &visitor) const;
 }; // class RFieldBase
+
+namespace Internal {
+// At some point, RFieldBase::OnClusterCommit() may allow for a user-defined callback to change the
+// column representation. For now, we inject this for testing and internal use only.
+struct RFieldRepresentationModifier {
+   static void SetPrimaryColumnRepresentation(RFieldBase &field, std::uint16_t newRepresentationIdx)
+   {
+      R__ASSERT(newRepresentationIdx < field.fColumnRepresentatives.size());
+      const auto N = field.fColumnRepresentatives[0].get().size();
+      R__ASSERT(N >= 1 && N <= 2);
+      R__ASSERT(field.fPrincipalColumn);
+      field.fPrincipalColumn = field.fAvailableColumns[newRepresentationIdx * N].get();
+      if (field.fAuxiliaryColumn) {
+         R__ASSERT(N == 2);
+         field.fAuxiliaryColumn = field.fAvailableColumns[newRepresentationIdx * N + 1].get();
+      }
+   }
+};
+} // namespace Internal
 
 /// The container field for an ntuple model, which itself has no physical representation.
 /// Therefore, the zero field must not be connected to a page source or sink.
@@ -1524,6 +1595,10 @@ protected:
    std::size_t AppendValue(const void *from);
    void CommitClusterImpl() final { fNWritten = 0; }
 
+   // The default implementation that translates the request into a call to ReadGlobalImpl() cannot be used
+   // because we don't team up the columns of the different column representations for this field.
+   void ReadInClusterImpl(RClusterIndex clusterIndex, void *to) final;
+
    /// Given the index of the nullable field, returns the corresponding global index of the subfield or,
    /// if it is null, returns kInvalidClusterIndex
    RClusterIndex GetItemIndex(NTupleSize_t globalIndex);
@@ -1535,8 +1610,8 @@ public:
    RNullableField &operator=(RNullableField &&other) = default;
    ~RNullableField() override = default;
 
-   void SetDense() { SetColumnRepresentative({EColumnType::kBit}); }
-   void SetSparse() { SetColumnRepresentative({EColumnType::kSplitIndex64}); }
+   void SetDense() { SetColumnRepresentatives({{EColumnType::kBit}}); }
+   void SetSparse() { SetColumnRepresentatives({{EColumnType::kSplitIndex64}}); }
 
    void AcceptVisitor(Detail::RFieldVisitor &visitor) const final;
 };
@@ -2242,6 +2317,14 @@ struct RIntegralTypeMap {
 };
 
 // RField<char> has its own specialization, we should not need a specialization of RIntegralTypeMap.
+// From https://en.cppreference.com/w/cpp/language/types:
+// char has the same representation and alignment as either signed char or
+// unsigned char, but is always a distinct type.
+template <>
+struct RIntegralTypeMap<signed char> {
+   static_assert(sizeof(signed char) == sizeof(std::int8_t));
+   using type = std::int8_t;
+};
 template <>
 struct RIntegralTypeMap<unsigned char> {
    static_assert(sizeof(unsigned char) == sizeof(std::uint8_t));
@@ -2633,8 +2716,8 @@ protected:
          nbytes += CallAppendOn(*fSubFields[0], &typedValue->data()[i]);
       }
       this->fNWritten += count;
-      fColumns[0]->Append(&this->fNWritten);
-      return nbytes + fColumns[0]->GetElement()->GetPackedSize();
+      fPrincipalColumn->Append(&this->fNWritten);
+      return nbytes + fPrincipalColumn->GetElement()->GetPackedSize();
    }
    void ReadGlobalImpl(NTupleSize_t globalIndex, void *to) final
    {
