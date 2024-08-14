@@ -396,6 +396,8 @@ namespace {
 //    Opts.StackProtector = 0;
 #endif // _MSC_VER
 
+    Opts.IncrementalExtensions = 1;
+
     Opts.Exceptions = 1;
     if (Opts.CPlusPlus) {
       Opts.CXXExceptions = 1;
@@ -442,8 +444,8 @@ namespace {
       Opts.MSVCCompat = 1;
       Opts.ThreadsafeStatics = 0; // FIXME: this is removing the thread guard around static init!
 #endif
-      // Should fix http://llvm.org/bugs/show_bug.cgi?id=10528
-      Opts.DelayedTemplateParsing = 1;
+      // Disable delayed template parsing, it is "a deprecated technique".
+      Opts.DelayedTemplateParsing = 0;
     } else {
       Opts.MicrosoftExt = 0;
     }
